@@ -214,10 +214,22 @@ function drawActiveBox(
   const len = 12;
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y);
-  ctx.moveTo(x + width - len, y); ctx.lineTo(x + width); ctx.lineTo(x + width, y + len);
-  ctx.moveTo(x, y + height - len); ctx.lineTo(x, y + height); ctx.lineTo(x + len, y + height);
-  ctx.moveTo(x + width - len, y + height); ctx.lineTo(x + width); ctx.lineTo(x + width, y + height - len);
+  // 左上
+  ctx.moveTo(x, y + len);
+  ctx.lineTo(x, y);
+  ctx.lineTo(x + len, y);
+  // 右上
+  ctx.moveTo(x + width - len, y);
+  ctx.lineTo(x + width, y);
+  ctx.lineTo(x + width, y + len);
+  // 左下
+  ctx.moveTo(x, y + height - len);
+  ctx.lineTo(x, y + height);
+  ctx.lineTo(x + len, y + height);
+  // 右下
+  ctx.moveTo(x + width - len, y + height);
+  ctx.lineTo(x + width, y + height);
+  ctx.lineTo(x + width, y + height - len);
   ctx.stroke();
 
   ctx.font = `bold 16px ${SERIF_FONT}`;
