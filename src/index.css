@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Paper Mono';
+  src: url('/assets/fonts/PaperMono[wght].woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  body {
+    font-family: 'Paper Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    background-color: #f6f6f3;
+    color: #222222;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Custom CSS variables for magazine sizing identical to paper.design */
+:root {
+  --magazine-frame: 1.44753;
+  --header-height: 60px;
+}
+
+.aspect-magazine {
+  aspect-ratio: 1.44753;
+}
