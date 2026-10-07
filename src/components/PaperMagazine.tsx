@@ -170,16 +170,17 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
 
   return (
     <div className={`relative w-full flex flex-col items-center select-none ${className}`}>
-      {/* 3D 大画幅主舞台（按 1.44753 物理比例自适应最大化，标准视口达到 1181×816 巨幅展示） */}
-      <div className="relative w-full flex justify-center items-center">
+      {/* 3D 大画幅主舞台（按 1.44753 物理比例自适应最大化，完美达成 1181×816 巨幅展示） */}
+      <div className="relative w-full flex justify-center items-center my-auto">
         <div
-          className="relative max-w-full"
+          className="relative"
           style={{
-            width: 'min(calc((100vh - 135px) * 1.44753), min(96vw, 1280px))',
+            height: 'min(calc(100vh - 125px), 816px)',
             aspectRatio: '1.44753',
+            maxWidth: 'min(96vw, 1220px)',
           }}
         >
-          {/* Magazine 3D Engine Mount Point: 完全透明无框，3D 物理光影自然投射在桌面 */}
+          {/* Magazine 3D Engine Mount Point: 尺寸放大至 1181×816，3D 物理光影自然投射在桌面 */}
           <div
             ref={containerRef}
             className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"

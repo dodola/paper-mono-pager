@@ -150,8 +150,12 @@ export class MagazineEngine {
     this.canvas = this.renderer.domElement;
     this.canvas.dataset.magazineLayer = '';
     this.canvas.style.display = 'block';
-    this.canvas.style.width = '100%';
-    this.canvas.style.height = '100%';
+    this.canvas.style.position = 'absolute';
+    this.canvas.style.top = '-27.975%';
+    this.canvas.style.left = '-27.975%';
+    this.canvas.style.width = '155.95%';
+    this.canvas.style.height = '155.95%';
+    this.canvas.style.pointerEvents = 'none';
     this.container.appendChild(this.canvas);
 
     // Hit area overlay
