@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PageContent } from './chinesePublicationData';
+import { PageLayoutElement, getPageLayoutElements } from './pageLayout';
 
 const CANVAS_WIDTH = 1440;
 const CANVAS_HEIGHT = 1983; // 1440 * 1.37708
@@ -12,6 +13,13 @@ export interface RenderOptions {
   paperColor?: string;
   textColor?: string;
   accentColor?: string;
+}
+
+export interface PageEditState {
+  hoveredElementId?: string | null;
+  activeElementId?: string | null;
+  activeTextOverride?: string;
+  caretVisible?: boolean;
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -90,11 +98,230 @@ function wrapChineseText(
   return lines;
 }
 
-export function renderPageToCanvas(
+// 辅助函数：将正在编辑的文本临时替换到页面数据中以实现即时渲染
+function applyTextOverride(
   page: PageContent,
-  customOptions?: RenderOptions
+  activeElementId: string,
+  text: string
+): PageContent {
+  const p = { ...page };
+  if (activeElementId === 'title') {
+    p.title = text;
+  } else if (activeElementId === 'subtitle') {
+    p.subtitle = text;
+  } else if (activeElementId === 'author') {
+    p.author = text;
+  } else if (activeElementId === 'chapterNumber') {
+    p.chapterNumber = text;
+  } else if (activeElementId === 'header') {
+    p.headerText = text;
+  } else if (activeElementId === 'seal') {
+    p.sealText = text;
+  } else if (activeElementId.startsWith('paragraph-')) {
+    const idx = parseInt(activeElementId.replace('paragraph-', ''), 10);
+    if (p.paragraphs && !isNaN(idx) && idx >= 0 && idx < p.paragraphs.length) {
+      p.paragraphs = [...p.paragraphs];
+      p.paragraphs[idx] = text;
+    }
+  } else if (activeElementId.startsWith('poetry-')) {
+    const idx = parseInt(activeElementId.replace('poetry-', ''), 10);
+    if (p.poetryLines && !isNaN(idx) && idx >= 0 && idx < p.poetryLines.length) {
+      p.poetryLines = [...p.poetryLines];
+      p.poetryLines[idx] = text;
+    }
+  } else if (activeElementId.startsWith('note-')) {
+    const idx = parseInt(activeElementId.replace('note-', ''), 10);
+    if (p.notes && !isNaN(idx) && idx >= 0 && idx < p.notes.length) {
+      p.notes = [...p.notes];
+      p.notes[idx] = text;
+    }
+  } else if (activeElementId.startsWith('toc-')) {
+    const idx = parseInt(activeElementId.replace('toc-', ''), 10);
+    if (p.tocItems && !isNaN(idx) && idx >= 0 && idx < p.tocItems.length) {
+      p.tocItems = [...p.tocItems];
+      p.tocItems[idx] = { ...p.tocItems[idx], title: text };
+    }
+  } else if (activeElementId.startsWith('colophon-')) {
+    const idx = parseInt(activeElementId.replace('colophon-', ''), 10);
+    if (p.colophonDetails && !isNaN(idx) && idx >= 0 && idx < p.colophonDetails.length) {
+      p.colophonDetails = [...p.colophonDetails];
+      p.colophonDetails[idx] = { ...p.colophonDetails[idx], value: text };
+    }
+  }
+  return p;
+}
+
+// 绘制出版级典雅裁切规线 ┌ ┐ └ ┘
+function drawCropMarks(
+  ctx: CanvasRenderingContext2D,
+  bounds: { x: number; y: number; width: number; height: number },
+  color = '#9B2D26'
+) {
+  const { x, y, width, height } = bounds;
+  const len = 16;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = 'square';
+
+  // 左上角 ┌
+  ctx.beginPath();
+  ctx.moveTo(x, y + len);
+  ctx.lineTo(x, y);
+  ctx.lineTo(x + len, y);
+  ctx.stroke();
+
+  // 右上角 ┐
+  ctx.beginPath();
+  ctx.moveTo(x + width - len, y);
+  ctx.lineTo(x + width, y);
+  ctx.lineTo(x + width, y + len);
+  ctx.stroke();
+
+  // 左下角 └
+  ctx.beginPath();
+  ctx.moveTo(x, y + height - len);
+  ctx.lineTo(x, y + height);
+  ctx.lineTo(x + len, y + height);
+  ctx.stroke();
+
+  // 右下角 ┘
+  ctx.beginPath();
+  ctx.moveTo(x + width - len, y + height);
+  ctx.lineTo(x + width, y + height);
+  ctx.lineTo(x + width, y + height - len);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// 绘制激活聚焦选框与标签
+function drawActiveBox(
+  ctx: CanvasRenderingContext2D,
+  bounds: { x: number; y: number; width: number; height: number },
+  accentColor = '#9B2D26'
+) {
+  const { x, y, width, height } = bounds;
+  ctx.save();
+  ctx.fillStyle = 'rgba(155, 45, 38, 0.04)';
+  ctx.fillRect(x, y, width, height);
+
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth = 1.8;
+  ctx.setLineDash([8, 5]);
+  ctx.strokeRect(x, y, width, height);
+  ctx.setLineDash([]);
+
+  const len = 12;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(x, y + len); ctx.lineTo(x, y); ctx.lineTo(x + len, y);
+  ctx.moveTo(x + width - len, y); ctx.lineTo(x + width); ctx.lineTo(x + width, y + len);
+  ctx.moveTo(x, y + height - len); ctx.lineTo(x, y + height); ctx.lineTo(x + len, y + height);
+  ctx.moveTo(x + width - len, y + height); ctx.lineTo(x + width); ctx.lineTo(x + width, y + height - len);
+  ctx.stroke();
+
+  ctx.font = `bold 16px ${SERIF_FONT}`;
+  ctx.fillStyle = accentColor;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('· 墨入纸面 ·', x + width - 4, y - 6);
+  ctx.restore();
+}
+
+// 绘制原生打字光标 |
+function drawCaretAtElement(
+  ctx: CanvasRenderingContext2D,
+  el: PageLayoutElement,
+  text: string,
+  accentColor = '#9B2D26'
+) {
+  ctx.save();
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+
+  let cx = el.bounds.x + 8;
+  let cy = el.bounds.y + 12;
+  let ch = Math.min(42, el.bounds.height - 16);
+
+  if (el.type === 'title') {
+    ctx.font = `bold 48px ${SERIF_FONT}`;
+    const tw = ctx.measureText(text).width;
+    if (el.bounds.width > 600) {
+      cx = el.bounds.x + el.bounds.width / 2 + tw / 2 + 6;
+      cy = el.bounds.y + 16;
+      ch = 48;
+    } else {
+      cx = el.bounds.x + tw + 10;
+      cy = el.bounds.y + 14;
+      ch = 44;
+    }
+  } else if (el.type === 'paragraph') {
+    ctx.font = `400 31px ${SERIF_FONT}`;
+    const lines = wrapChineseText(ctx, '　　' + text, el.bounds.width - 20);
+    const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
+    const tw = ctx.measureText(lastLine).width;
+    cx = el.bounds.x + 15 + tw + 6;
+    cy = el.bounds.y + 15 + Math.max(0, lines.length - 1) * 60;
+    ch = 36;
+  } else {
+    ctx.font = `400 28px ${SERIF_FONT}`;
+    const tw = ctx.measureText(text).width;
+    cx = el.bounds.x + 10 + tw + 6;
+    cy = el.bounds.y + 10;
+    ch = Math.min(36, el.bounds.height - 12);
+  }
+
+  cx = Math.min(cx, el.bounds.x + el.bounds.width - 6);
+
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx, cy + ch);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function applyEditOverlay(
+  ctx: CanvasRenderingContext2D,
+  page: PageContent,
+  options: Required<RenderOptions>,
+  editState?: PageEditState
+) {
+  if (!editState) return;
+  const pageIndex = Math.max(0, page.sideIndex - 1);
+  const elements = getPageLayoutElements(page, pageIndex);
+
+  // 1. 悬停元素绘制角标
+  if (editState.hoveredElementId && editState.hoveredElementId !== editState.activeElementId) {
+    const el = elements.find((e) => e.id === editState.hoveredElementId);
+    if (el) {
+      drawCropMarks(ctx, el.bounds, options.accentColor);
+    }
+  }
+
+  // 2. 激活元素绘制选框与原生光标
+  if (editState.activeElementId) {
+    const el = elements.find((e) => e.id === editState.activeElementId);
+    if (el) {
+      drawActiveBox(ctx, el.bounds, options.accentColor);
+      if (editState.caretVisible) {
+        const text = editState.activeTextOverride !== undefined ? editState.activeTextOverride : el.text;
+        drawCaretAtElement(ctx, el, text, options.accentColor);
+      }
+    }
+  }
+}
+
+export function renderPageToCanvas(
+  rawPage: PageContent,
+  customOptions?: RenderOptions,
+  editState?: PageEditState
 ): HTMLCanvasElement {
   const options = { ...DEFAULT_OPTIONS, ...customOptions };
+  const page = editState?.activeElementId && editState.activeTextOverride !== undefined
+    ? applyTextOverride(rawPage, editState.activeElementId, editState.activeTextOverride)
+    : rawPage;
+
   const canvas = document.createElement('canvas');
   canvas.width = CANVAS_WIDTH;
   canvas.height = CANVAS_HEIGHT;
@@ -124,12 +351,14 @@ export function renderPageToCanvas(
   // 2. 封面特别渲染
   if (page.type === 'cover') {
     renderCover(ctx, page, options);
+    applyEditOverlay(ctx, page, options, editState);
     return canvas;
   }
 
   // 3. 封底版权页特别渲染
   if (page.type === 'colophon') {
     renderColophon(ctx, page, options);
+    applyEditOverlay(ctx, page, options, editState);
     return canvas;
   }
 
@@ -401,6 +630,7 @@ export function renderPageToCanvas(
     }
   }
 
+  applyEditOverlay(ctx, page, options, editState);
   return canvas;
 }
 

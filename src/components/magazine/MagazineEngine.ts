@@ -19,7 +19,7 @@ import type {
   AutoFlipState,
 } from './types';
 import { PageContent } from './chinesePublicationData';
-import { renderPageToCanvas, RenderOptions } from './pageRenderer';
+import { renderPageToCanvas, RenderOptions, PageEditState } from './pageRenderer';
 
 export interface MagazineEngineOptions {
   container: HTMLElement;
@@ -57,6 +57,10 @@ export class MagazineEngine {
   private pageTextures: THREE.CanvasTexture[] = [];
   private patternTexture: THREE.Texture | null = null;
   private placeholderTex: THREE.DataTexture;
+
+  // Native 3D Editor state
+  private isEditMode = false;
+  private pageEditStates: Record<number, PageEditState | null> = {};
 
   // Interaction & Physics state
   private lastActiveSheet = -1;
@@ -492,6 +496,164 @@ export class MagazineEngine {
     return [...this.pageContents];
   }
 
+  public getCurrentRenderOptions(): RenderOptions {
+    return { ...this.renderOptions };
+  }
+
+  public setEditMode(enabled: boolean) {
+    this.isEditMode = enabled;
+    if (enabled) {
+      this.cancelAutoFlip();
+      this.dragState = null;
+      this.hoverSheet = -1;
+      if (this.hitArea) {
+        this.hitArea.style.cursor = 'default';
+      }
+    } else {
+      if (this.hitArea) {
+        this.hitArea.style.cursor = 'pointer';
+      }
+      this.clearAllEditStates();
+    }
+    this.needsRender = true;
+  }
+
+  public getIsEditMode(): boolean {
+    return this.isEditMode;
+  }
+
+  public clearAllEditStates() {
+    for (const key of Object.keys(this.pageEditStates)) {
+      const idx = Number(key);
+      this.updatePageEditState(idx, null);
+    }
+    this.pageEditStates = {};
+  }
+
+  public getLeftPageIndex(): number | null {
+    if (this.currentSheetIndex === 0) return null;
+    return (this.currentSheetIndex * 2) - 1;
+  }
+
+  public getRightPageIndex(): number | null {
+    if (this.currentSheetIndex >= this.totalSheets) return null;
+    if (this.currentSheetIndex === 0) return 0;
+    const rightPage1Based = this.currentSheetIndex * 2 + 1;
+    if (rightPage1Based > this.pageContents.length) return null;
+    return rightPage1Based - 1;
+  }
+
+  /**
+   * 将浏览器视口鼠标指针客户端坐标 (clientX, clientY)
+   * 经 Three.js 摄像机与 3D 书页表面射线拾取，解算为出版物纹理像素坐标 (canvasX, canvasY)
+   */
+  public getCanvasCoordsFromClient(clientX: number, clientY: number): {
+    pageIndex: number;
+    side: 'left' | 'right';
+    canvasX: number;
+    canvasY: number;
+  } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (
+      clientX < rect.left ||
+      clientX > rect.right ||
+      clientY < rect.top ||
+      clientY > rect.bottom
+    ) {
+      return null;
+    }
+
+    this.mouseVec.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -(2 * ((clientY - rect.top) / rect.height)) + 1
+    );
+    this.raycaster.setFromCamera(this.mouseVec, this.camera);
+
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, this.intersectPoint)) {
+      return null;
+    }
+
+    const px = this.intersectPoint.x;
+    const py = this.intersectPoint.y;
+
+    // 书页在 3D 世界半高度：1.377 / 2 = 0.6885
+    const halfH = 1.377 / 2;
+    if (py < -halfH || py > halfH) {
+      return null;
+    }
+
+    const canvasY = ((halfH - py) / 1.377) * 1983;
+
+    if (px >= 0 && px <= 1.0) {
+      const pageIndex = this.getRightPageIndex();
+      if (pageIndex === null) return null;
+      const canvasX = px * 1440;
+      return {
+        pageIndex,
+        side: 'right',
+        canvasX,
+        canvasY,
+      };
+    } else if (px >= -1.0 && px < 0) {
+      const pageIndex = this.getLeftPageIndex();
+      if (pageIndex === null) return null;
+      const canvasX = (1.0 + px) * 1440;
+      return {
+        pageIndex,
+        side: 'left',
+        canvasX,
+        canvasY,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * 原生 3D 编辑态材质热重绘：
+   * 将当前页面的高亮选框、裁切角标、闪烁光标等直接绘制入 2D 纹理 Canvas，
+   * 毫秒级提交至 WebGL 材质，实现 0 重影、0 视差的原生 3D 书页编辑。
+   */
+  public updatePageEditState(
+    pageIndex: number,
+    editState: PageEditState | null
+  ) {
+    if (pageIndex < 0 || pageIndex >= this.pageContents.length) return;
+    this.pageEditStates[pageIndex] = editState;
+    const page = this.pageContents[pageIndex];
+    const canvas = renderPageToCanvas(page, this.renderOptions, editState || undefined);
+    this.pageCanvases[pageIndex] = canvas;
+
+    let tex = this.pageTextures[pageIndex];
+    const anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    if (!tex) {
+      tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = anisotropy;
+      this.pageTextures[pageIndex] = tex;
+    } else {
+      tex.image = canvas;
+      tex.needsUpdate = true;
+    }
+
+    this.renderer.initTexture(tex);
+
+    const sheetIndex = pageIndex >> 1;
+    const isBack = pageIndex % 2 === 1;
+    const sheet = this.sheets[sheetIndex];
+    if (sheet) {
+      if (!isBack) {
+        sheet.frontTex = tex;
+        (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
+        (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
+      } else {
+        sheet.sheetUniforms.uBackMap.value = tex;
+      }
+    }
+
+    this.needsRender = true;
+  }
+
   private cornerRollMax(deg: number): number {
     const rad = (Math.abs(deg) * Math.PI) / 180;
     const a = 1 - 0.6885 * Math.sin(rad);
@@ -574,6 +736,7 @@ export class MagazineEngine {
   }
 
   private getSheetTargetUnderPointer(clientX: number): { sheetIndex: number; forward: boolean } | null {
+    if (this.isEditMode) return null;
     const rect = this.canvas.getBoundingClientRect();
     const forward = clientX - rect.left >= rect.width / 2;
     if (forward ? this.currentSheetIndex >= this.totalSheets : this.currentSheetIndex <= 0) {
@@ -674,6 +837,7 @@ export class MagazineEngine {
   }
 
   private handlePointerDown(e: PointerEvent) {
+    if (this.isEditMode) return;
     if (e.button !== 0) return;
     const target = this.getSheetTargetUnderPointer(e.clientX);
     if (!target) return;
@@ -717,6 +881,12 @@ export class MagazineEngine {
   }
 
   private handlePointerMove(e: PointerEvent) {
+    if (this.isEditMode) {
+      this.pointerX = e.clientX;
+      this.pointerY = e.clientY;
+      return;
+    }
+
     if (this.autoFlipState) {
       if (this.pointerDownPos) {
         const distSq =
@@ -751,6 +921,7 @@ export class MagazineEngine {
   }
 
   private handlePointerUp(e: PointerEvent) {
+    if (this.isEditMode) return;
     this.cancelAutoFlip();
     if (!this.dragState) {
       this.pointerDownPos = null;
@@ -910,7 +1081,7 @@ export class MagazineEngine {
     const smoothDir = 1 - Math.pow(0.001, dt / this.S.directionSmoothTime);
 
     // Hover peek target
-    const hoverTarget = !this.isPointerInside || this.dragState || this.autoFlipState
+    const hoverTarget = this.isEditMode || !this.isPointerInside || this.dragState || this.autoFlipState
       ? null
       : this.getSheetTargetUnderPointer(this.pointerX);
 

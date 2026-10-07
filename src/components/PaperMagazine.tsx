@@ -3,7 +3,7 @@ import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
 import { CHINESE_PAGES, getAllBookText } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
-import { InPage3DEditor } from './magazine/InPage3DEditor';
+import { Native3DEditor } from './magazine/Native3DEditor';
 import {
   ChevronLeft,
   ChevronRight,
@@ -285,12 +285,15 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
           {/* Magazine 3D Engine Mount Point */}
           <div
             ref={containerRef}
-            className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
+            className={`absolute inset-0 size-full ${
+              isEditMode ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
+            }`}
           />
 
-          {/* 直接在 3D 书页表面进行的可视化页面编辑器 */}
+          {/* 原生 3D 纹理层排印编辑器 (Native In-Texture 3D Editor) */}
           {isEditMode && (
-            <InPage3DEditor
+            <Native3DEditor
+              engine={engineRef.current}
               stageWidth={stageSize.width}
               stageHeight={stageSize.height}
               currentSheet={currentSheet}
