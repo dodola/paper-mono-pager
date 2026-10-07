@@ -18,11 +18,14 @@ import type {
   DragState,
   AutoFlipState,
 } from './types';
+import { PageContent } from './chinesePublicationData';
+import { renderPageToCanvas, RenderOptions } from './pageRenderer';
 
 export interface MagazineEngineOptions {
   container: HTMLElement;
-  pages: string[];
-  patternUrl: string;
+  pageContents: PageContent[];
+  patternUrl?: string;
+  renderOptions?: RenderOptions;
   onPageChange?: (currentSheet: number, leftPage: number | null, rightPage: number | null) => void;
   onProgress?: (loaded: number, total: number) => void;
   onReady?: () => void;
@@ -30,8 +33,9 @@ export interface MagazineEngineOptions {
 
 export class MagazineEngine {
   private container: HTMLElement;
-  private pages: string[];
-  private patternUrl: string;
+  private pageContents: PageContent[];
+  private patternUrl?: string;
+  private renderOptions: RenderOptions;
   private onPageChange?: (currentSheet: number, leftPage: number | null, rightPage: number | null) => void;
   private onProgress?: (loaded: number, total: number) => void;
   private onReady?: () => void;
@@ -49,7 +53,8 @@ export class MagazineEngine {
   private currentSheetIndex = 0; // A: 0..totalSheets
   private sheets: SheetData[] = [];
   private animations: ActiveAnimation[] = [];
-  private loadedTextures: (THREE.Texture | null)[] = [];
+  private pageCanvases: HTMLCanvasElement[] = [];
+  private pageTextures: THREE.CanvasTexture[] = [];
   private patternTexture: THREE.Texture | null = null;
   private placeholderTex: THREE.DataTexture;
 
@@ -121,13 +126,14 @@ export class MagazineEngine {
 
   constructor(options: MagazineEngineOptions) {
     this.container = options.container;
-    this.pages = options.pages;
+    this.pageContents = options.pageContents;
     this.patternUrl = options.patternUrl;
+    this.renderOptions = options.renderOptions || {};
     this.onPageChange = options.onPageChange;
     this.onProgress = options.onProgress;
     this.onReady = options.onReady;
 
-    this.totalSheets = Math.ceil(this.pages.length / 2);
+    this.totalSheets = Math.ceil(this.pageContents.length / 2);
 
     // Setup Three.js scene
     this.scene = new THREE.Scene();
@@ -189,7 +195,7 @@ export class MagazineEngine {
     this.scene.add(shadowMesh);
 
     // Placeholder textures
-    this.placeholderTex = new THREE.DataTexture(new Uint8Array([252, 252, 249, 255]), 1, 1);
+    this.placeholderTex = new THREE.DataTexture(new Uint8Array([250, 247, 242, 255]), 1, 1);
     this.placeholderTex.colorSpace = THREE.SRGBColorSpace;
     this.placeholderTex.needsUpdate = true;
 
@@ -204,9 +210,9 @@ export class MagazineEngine {
     this.resizeObserver.observe(this.canvas);
     this.handleResize();
 
-    // Start load textures
-    this.loadPatternTexture();
-    this.loadPageTextures();
+    // Generate dynamic canvas textures for all pages
+    this.initPatternTexture();
+    this.renderAllPageTextures();
 
     // Start animation loop
     this.renderer.setAnimationLoop(this.animate.bind(this));
@@ -323,6 +329,107 @@ export class MagazineEngine {
 
       this.sheets.push(sheetData);
       this.scene.add(mesh);
+    }
+  }
+
+  private initPatternTexture() {
+    if (this.patternUrl) {
+      new THREE.TextureLoader().load(
+        this.patternUrl,
+        (tex) => {
+          tex.wrapS = THREE.RepeatWrapping;
+          tex.wrapT = THREE.RepeatWrapping;
+          tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+          this.patternTexture = tex;
+          for (const s of this.sheets) {
+            s.sheetUniforms.uPatternTex.value = tex;
+          }
+          this.renderer.initTexture(tex);
+          this.needsRender = true;
+        },
+        undefined,
+        () => {
+          this.createProceduralPatternTexture();
+        }
+      );
+    } else {
+      this.createProceduralPatternTexture();
+    }
+  }
+
+  private createProceduralPatternTexture() {
+    // Generate fine paper fiber roughness procedural texture
+    const pCanvas = document.createElement('canvas');
+    pCanvas.width = 384;
+    pCanvas.height = 384;
+    const pCtx = pCanvas.getContext('2d')!;
+    const imgData = pCtx.createImageData(384, 384);
+    const data = imgData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const v = 110 + Math.floor(Math.random() * 50);
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+    pCtx.putImageData(imgData, 0, 0);
+
+    const tex = new THREE.CanvasTexture(pCanvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    this.patternTexture = tex;
+    for (const s of this.sheets) {
+      s.sheetUniforms.uPatternTex.value = tex;
+    }
+    this.renderer.initTexture(tex);
+    this.needsRender = true;
+  }
+
+  public renderAllPageTextures(customOptions?: RenderOptions) {
+    if (customOptions) {
+      this.renderOptions = { ...this.renderOptions, ...customOptions };
+    }
+
+    const anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+
+    this.pageContents.forEach((page, i) => {
+      const canvas = renderPageToCanvas(page, this.renderOptions);
+      this.pageCanvases[i] = canvas;
+
+      let tex = this.pageTextures[i];
+      if (!tex) {
+        tex = new THREE.CanvasTexture(canvas);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = anisotropy;
+        this.pageTextures[i] = tex;
+      } else {
+        tex.image = canvas;
+        tex.needsUpdate = true;
+      }
+
+      this.renderer.initTexture(tex);
+
+      const sheetIndex = i >> 1;
+      const isBack = i % 2 === 1;
+      const sheet = this.sheets[sheetIndex];
+      if (sheet) {
+        if (!isBack) {
+          sheet.frontTex = tex;
+          (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
+          (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
+        } else {
+          sheet.sheetUniforms.uBackMap.value = tex;
+        }
+      }
+
+      this.onProgress?.(i + 1, this.pageContents.length);
+    });
+
+    this.needsRender = true;
+    if (!this.isEngineReady) {
+      this.isEngineReady = true;
+      this.onReady?.();
     }
   }
 
@@ -605,12 +712,10 @@ export class MagazineEngine {
     } catch {}
 
     if (!isDragMoved) {
-      // Simple click flip
       this.triggerSheetFlip(drag.sheetIndex, drag.forward, drag.forward ? 1 : 0);
       return;
     }
 
-    // Release drag with momentum launch
     const commit =
       (drag.forward ? drag.progress - drag.base : drag.base - drag.progress) >=
       this.DragPhysics.commitProgress;
@@ -677,71 +782,7 @@ export class MagazineEngine {
     this.needsRender = true;
   }
 
-  private async loadPatternTexture() {
-    try {
-      const loader = new THREE.TextureLoader();
-      const texture = await loader.loadAsync(this.patternUrl);
-      texture.wrapS = THREE.RepeatWrapping;
-      texture.wrapT = THREE.RepeatWrapping;
-      texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-      this.patternTexture = texture;
-
-      for (const sheet of this.sheets) {
-        sheet.sheetUniforms.uPatternTex.value = texture;
-      }
-      this.renderer.initTexture(texture);
-      this.needsRender = true;
-    } catch (err) {
-      console.warn('Failed to load paper texture:', err);
-    }
-  }
-
-  private async loadPageTextures() {
-    const loader = new THREE.TextureLoader();
-    let loadedCount = 0;
-
-    for (let i = 0; i < this.pages.length; i++) {
-      if (this.isDisposed) return;
-      try {
-        const tex = await loader.loadAsync(this.pages[i]);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-        this.renderer.initTexture(tex);
-        this.loadedTextures[i] = tex;
-
-        const sheetIndex = i >> 1;
-        const isBack = i % 2 === 1;
-        const sheet = this.sheets[sheetIndex];
-        if (sheet) {
-          if (!isBack) {
-            sheet.frontTex = tex;
-            (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
-            (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
-          } else {
-            sheet.sheetUniforms.uBackMap.value = tex;
-          }
-        }
-
-        loadedCount++;
-        this.onProgress?.(loadedCount, this.pages.length);
-        this.needsRender = true;
-
-        if (loadedCount >= 2 && !this.isEngineReady) {
-          this.isEngineReady = true;
-          this.onReady?.();
-        }
-      } catch (err) {
-        console.warn(`Page ${i + 1} texture failed to load`, err);
-      }
-    }
-  }
-
   private notifyPageChange() {
-    // Current spread calculation
-    // sheetIndex: 0..totalSheets
-    // If sheetIndex == 0: [null, 1]
-    // If sheetIndex == totalSheets: [totalSheets * 2, null]
-    // Otherwise: [sheetIndex * 2, sheetIndex * 2 + 1]
     let left: number | null = null;
     let right: number | null = null;
 
@@ -828,7 +869,6 @@ export class MagazineEngine {
     for (let i = 0; i < this.sheets.length; i++) {
       const sheet = this.sheets[i];
 
-      // Update resting progress and hover peek if not currently dragging or animating
       if (!this.isSheetAnimating(i) && !(this.dragState && this.dragState.sheetIndex === i)) {
         const isHovered = i === this.hoverSheet;
         const targetRest = i >= this.currentSheetIndex ? 0 : 1;
@@ -849,7 +889,6 @@ export class MagazineEngine {
           isBusy = true;
         }
 
-        // Sheet gap stacking
         const neighbor = this.sheets[targetRest === 0 ? i - 1 : i + 1];
         if (neighbor) {
           const clamped =
@@ -866,7 +905,6 @@ export class MagazineEngine {
         sheet.directionSmooth = sheet.direction;
       }
 
-      // Smooth direction
       const dirDiff = sheet.direction - sheet.directionSmooth;
       if (Math.abs(dirDiff) < this.S.settleEpsilon) {
         if (sheet.directionSmooth !== sheet.direction) {
@@ -878,7 +916,6 @@ export class MagazineEngine {
         isBusy = true;
       }
 
-      // Smooth curve parameters
       for (const key of ['curlArc', 'curlAngleDeg'] as const) {
         const cDiff = sheet.curveTarget[key] - sheet.curve[key];
         if (Math.abs(cDiff) < this.S.settleEpsilon) {
@@ -889,7 +926,6 @@ export class MagazineEngine {
         }
       }
 
-      // Compute geometric uniforms
       const lift = sheet.stackLiftBase + sheet.stackLiftSpan * sheet.flipProgress;
       const uniforms = sheet.sheetUniforms;
       const curve = sheet.curve;
@@ -965,7 +1001,6 @@ export class MagazineEngine {
     if (clamped === this.currentSheetIndex) return;
 
     if (clamped > this.currentSheetIndex) {
-      // Flip forward to target
       let delay = 0;
       for (let i = this.currentSheetIndex; i < clamped; i++) {
         setTimeout(() => {
@@ -976,7 +1011,6 @@ export class MagazineEngine {
         delay += 90;
       }
     } else {
-      // Flip backward to target
       let delay = 0;
       for (let i = this.currentSheetIndex - 1; i >= clamped; i--) {
         setTimeout(() => {
@@ -1010,7 +1044,7 @@ export class MagazineEngine {
       sheet.mesh.customDepthMaterial?.dispose();
     }
 
-    for (const tex of this.loadedTextures) {
+    for (const tex of this.pageTextures) {
       tex?.dispose();
     }
 

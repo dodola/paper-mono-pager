@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
+import { CHINESE_PAGES, PageContent } from './magazine/chinesePublicationData';
+import { RenderOptions } from './magazine/pageRenderer';
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,11 +14,19 @@ import {
   Pause,
   RotateCcw,
   Sparkles,
+  Palette,
 } from 'lucide-react';
 
 export interface PaperMagazineProps {
   className?: string;
 }
+
+const PAPER_THEMES = [
+  { name: '古籍米宣', bg: '#F9F7F2', text: '#242220', accent: '#9B2D26' },
+  { name: '竹青素白', bg: '#F5F7F4', text: '#1E2321', accent: '#2D5A46' },
+  { name: '暖调象牙', bg: '#FDFBF7', text: '#25211E', accent: '#A03B26' },
+  { name: '怀旧古纸', bg: '#F5EFE6', text: '#2C2723', accent: '#8C2B21' },
+];
 
 export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -25,35 +35,35 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
   const [currentSheet, setCurrentSheet] = useState(0);
   const [leftPage, setLeftPage] = useState<number | null>(null);
   const [rightPage, setRightPage] = useState<number | null>(1);
-  const [totalSheets, setTotalSheets] = useState(14);
-  const [loadedCount, setLoadedCount] = useState(0);
+  const [totalSheets, setTotalSheets] = useState(Math.ceil(CHINESE_PAGES.length / 2));
   const [isReady, setIsReady] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [autoPlay, setAutoPlay] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-
-  // Generate page URLs array (28 pages)
-  const pageUrls = useRef<string[]>(
-    Array.from({ length: 28 }, (_, i) => `/assets/pages/page_${(i + 1).toString().padStart(2, '0')}.png`)
-  ).current;
+  const [selectedThemeIndex, setSelectedThemeIndex] = useState(0);
 
   const patternUrl = '/assets/pages/texture.webp';
 
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const currentTheme = PAPER_THEMES[selectedThemeIndex];
+    const renderOptions: RenderOptions = {
+      paperColor: currentTheme.bg,
+      textColor: currentTheme.text,
+      accentColor: currentTheme.accent,
+    };
+
     const engine = new MagazineEngine({
       container: containerRef.current,
-      pages: pageUrls,
+      pageContents: CHINESE_PAGES,
       patternUrl,
+      renderOptions,
       onPageChange: (sheetIdx, left, right) => {
         setCurrentSheet(sheetIdx);
         setLeftPage(left);
         setRightPage(right);
         pageSound.playFlip();
-      },
-      onProgress: (loaded, total) => {
-        setLoadedCount(loaded);
       },
       onReady: () => {
         setIsReady(true);
@@ -67,9 +77,19 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
       engine.dispose();
       engineRef.current = null;
     };
-  }, [pageUrls]);
+  }, []);
 
-  // Keyboard navigation
+  const changeTheme = (idx: number) => {
+    setSelectedThemeIndex(idx);
+    const theme = PAPER_THEMES[idx];
+    engineRef.current?.renderAllPageTextures({
+      paperColor: theme.bg,
+      textColor: theme.text,
+      accentColor: theme.accent,
+    });
+  };
+
+  // 键盘快捷翻页
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -95,7 +115,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Autoplay timer
+  // 自动翻页计时器
   useEffect(() => {
     if (!autoPlay) return;
 
@@ -109,7 +129,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
       } else {
         engineRef.current.flipNext();
       }
-    }, 2400);
+    }, 2800);
 
     return () => clearInterval(interval);
   }, [autoPlay]);
@@ -138,20 +158,23 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
   };
 
   const formatSpreadLabel = () => {
-    if (currentSheet === 0) return 'Front Cover — Page 01';
-    if (currentSheet === totalSheets) return 'Back Cover — Page 28';
-    const l = leftPage ? leftPage.toString().padStart(2, '0') : '--';
-    const r = rightPage ? rightPage.toString().padStart(2, '0') : '--';
-    return `Pages ${l} – ${r}`;
+    if (currentSheet === 0) return '封面 · 卷首';
+    if (currentSheet === totalSheets) return '封底 · 版权页';
+    const l = leftPage ? CHINESE_PAGES[leftPage - 1]?.title || `第 ${leftPage} 页` : '';
+    const r = rightPage ? CHINESE_PAGES[rightPage - 1]?.title || `第 ${rightPage} 页` : '';
+    if (l && r) {
+      return `第 ${leftPage}、${rightPage} 页（${l} / ${r}）`;
+    }
+    return l ? `第 ${leftPage} 页（${l}）` : `第 ${rightPage} 页（${r}）`;
   };
 
   return (
     <div className={`relative flex flex-col items-center select-none ${className}`}>
-      {/* 3D Book Stage */}
+      {/* 3D 舞台区域 */}
       <div className="relative w-full max-w-[1240px] px-4 md:px-8 flex flex-col items-center">
         {/* Aspect Frame */}
         <div
-          className="relative w-full aspect-[1.44753] max-h-[calc(100vh-170px)] min-h-[360px] rounded-lg shadow-xl/5 border border-[#222222]/10 bg-[#f9f9f6] overflow-hidden"
+          className="relative w-full aspect-[1.44753] max-h-[calc(100vh-170px)] min-h-[360px] rounded-lg shadow-xl/5 border border-[#222222]/10 bg-[#f9f7f2] overflow-hidden"
           style={{
             boxShadow:
               '0 24px 48px -12px rgba(0, 0, 0, 0.08), 0 12px 24px -8px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0,0,0,0.04)',
@@ -163,61 +186,53 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
             className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
           />
 
-          {/* Initial Loading Overlay */}
-          {!isReady && (
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-[#F6F6F3]/90 backdrop-blur-sm transition-opacity duration-300">
-              <div className="flex items-center gap-3 text-sm font-mono tracking-tight text-[#222]">
-                <div className="size-4 rounded-full border-2 border-[#222] border-t-transparent animate-spin" />
-                <span>Loading Paper Mono Specimen ({loadedCount}/28)...</span>
-              </div>
-            </div>
-          )}
-
-          {/* Interaction Instruction pill */}
-          <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#222222]/80 px-3.5 py-1 text-xs text-white backdrop-blur-md opacity-80 transition-opacity hover:opacity-100">
-            <Sparkles className="size-3.5 text-[#81acec]" />
-            <span>Click or drag page edge to curl & flip • Hold to flip fast</span>
+          {/* 交互提示气泡 */}
+          <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/80 px-4 py-1.5 text-xs text-white backdrop-blur-md opacity-85 transition-opacity hover:opacity-100">
+            <Sparkles className="size-3.5 text-[#e5b299]" />
+            <span>鼠标拖拽边缘或单击翻页 • 长按可极速连翻 • 支持键盘左右键</span>
           </div>
 
-          {/* Quick Page Prev/Next Hover Edge Buttons */}
+          {/* 左右快捷翻页悬浮按钮 */}
           <button
             onClick={() => engineRef.current?.flipPrev()}
             disabled={currentSheet <= 0}
-            aria-label="Previous Page"
-            className="absolute left-2 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/70 hover:bg-white text-[#222] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+            aria-label="上一页"
+            className="absolute left-3 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/70 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <ChevronLeft className="size-6" />
           </button>
           <button
             onClick={() => engineRef.current?.flipNext()}
             disabled={currentSheet >= totalSheets}
-            aria-label="Next Page"
-            className="absolute right-2 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/70 hover:bg-white text-[#222] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+            aria-label="下一页"
+            className="absolute right-3 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/70 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <ChevronRight className="size-6" />
           </button>
         </div>
 
-        {/* Bottom Control Bar */}
-        <div className="mt-5 w-full max-w-[840px] flex flex-col sm:flex-row items-center justify-between gap-4 rounded-xl border border-[#222222]/10 bg-white/80 p-3.5 shadow-sm backdrop-blur-md">
-          {/* Spread Indicator & Rewind */}
+        {/* 底部功能控制条 */}
+        <div className="mt-5 w-full max-w-[880px] flex flex-col sm:flex-row items-center justify-between gap-4 rounded-xl border border-[#222222]/10 bg-white/80 p-3.5 shadow-sm backdrop-blur-md">
+          {/* 页码与跨页状态 */}
           <div className="flex items-center gap-3">
             <button
               onClick={() => engineRef.current?.goToSheet(0)}
-              title="Return to Cover"
-              className="p-1.5 rounded-md hover:bg-black/5 text-[#222] transition-colors cursor-pointer"
+              title="回到封面"
+              className="p-1.5 rounded-md hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
             >
               <RotateCcw className="size-4" />
             </button>
-            <span className="font-mono text-xs font-semibold tracking-wide text-[#222]">
-              {formatSpreadLabel()}
-            </span>
-            <span className="text-xs text-[#222]/40 font-mono">
-              ({currentSheet}/{totalSheets})
-            </span>
+            <div className="flex flex-col">
+              <span className="text-xs font-semibold tracking-wide text-[#242220] max-w-[280px] truncate">
+                {formatSpreadLabel()}
+              </span>
+              <span className="text-[11px] text-[#242220]/50">
+                跨页进度：{currentSheet} / {totalSheets}
+              </span>
+            </div>
           </div>
 
-          {/* Page Slider */}
+          {/* 进度滑动条 */}
           <div className="flex-1 w-full sm:w-auto mx-2 flex items-center gap-2">
             <input
               type="range"
@@ -225,59 +240,78 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
               max={totalSheets}
               value={currentSheet}
               onChange={handleSliderChange}
-              className="w-full h-1.5 bg-[#e2e2dd] rounded-lg appearance-none cursor-pointer accent-[#222222]"
+              className="w-full h-1.5 bg-[#e4e1d9] rounded-lg appearance-none cursor-pointer accent-[#9B2D26]"
             />
           </div>
 
-          {/* Right Action Icons */}
-          <div className="flex items-center gap-1.5">
-            {/* Auto Play */}
+          {/* 右侧控制选项 */}
+          <div className="flex items-center gap-2">
+            {/* 纸张色调切换 */}
+            <div className="flex items-center gap-1 border-r border-[#222]/10 pr-2">
+              <Palette className="size-3.5 text-[#242220]/50 mr-0.5" />
+              {PAPER_THEMES.map((theme, i) => (
+                <button
+                  key={theme.name}
+                  onClick={() => changeTheme(i)}
+                  title={`切换为：${theme.name}`}
+                  className={`size-5 rounded-full border transition-all cursor-pointer ${
+                    selectedThemeIndex === i ? 'ring-2 ring-[#9B2D26] ring-offset-1 scale-110' : 'border-black/20'
+                  }`}
+                  style={{ backgroundColor: theme.bg }}
+                />
+              ))}
+            </div>
+
+            {/* 自动翻页 */}
             <button
               onClick={() => setAutoPlay((p) => !p)}
-              title={autoPlay ? 'Pause Auto-Play' : 'Auto-Play Slideshow'}
-              className={`p-2 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer ${
-                autoPlay ? 'bg-[#222] text-white' : 'hover:bg-black/5 text-[#222]'
+              title={autoPlay ? '暂停自动翻页' : '开启自动连读'}
+              className={`px-2.5 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
+                autoPlay ? 'bg-[#9B2D26] text-white' : 'hover:bg-black/5 text-[#242220]'
               }`}
             >
               {autoPlay ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
-              <span className="hidden sm:inline">{autoPlay ? 'Pause' : 'Auto'}</span>
+              <span>{autoPlay ? '暂停' : '自动'}</span>
             </button>
 
-            {/* Sound Toggle */}
+            {/* 音效切换 */}
             <button
               onClick={toggleSound}
-              title={soundEnabled ? 'Mute Flip Sound' : 'Enable Flip Sound'}
-              className="p-2 rounded-lg hover:bg-black/5 text-[#222] transition-colors cursor-pointer"
+              title={soundEnabled ? '静音翻页声' : '开启纸张翻书音效'}
+              className="p-1.5 rounded-md hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
             >
               {soundEnabled ? <Volume2 className="size-4" /> : <VolumeX className="size-4 text-red-500" />}
             </button>
 
-            {/* Fullscreen */}
+            {/* 全屏模式 */}
             <button
               onClick={toggleFullscreen}
-              title="Toggle Fullscreen"
-              className="p-2 rounded-lg hover:bg-black/5 text-[#222] transition-colors cursor-pointer"
+              title="切换全屏沉浸模式"
+              className="p-1.5 rounded-md hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
             >
               {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
             </button>
           </div>
         </div>
 
-        {/* Quick Page Thumbnail Navigator Strip */}
-        <div className="mt-4 w-full max-w-[840px] flex items-center gap-1.5 overflow-x-auto pb-2 scrollbar-thin">
-          {Array.from({ length: totalSheets + 1 }).map((_, idx) => (
-            <button
-              key={idx}
-              onClick={() => engineRef.current?.goToSheet(idx)}
-              className={`shrink-0 h-9 px-2.5 rounded border text-xs font-mono transition-all cursor-pointer ${
-                currentSheet === idx
-                  ? 'border-[#222] bg-[#222] text-white font-bold shadow-sm'
-                  : 'border-[#222]/15 bg-white/60 hover:bg-white text-[#222]/70 hover:text-[#222]'
-              }`}
-            >
-              {idx === 0 ? 'Cover' : idx === totalSheets ? 'Back' : `${2 * idx}-${2 * idx + 1}`}
-            </button>
-          ))}
+        {/* 缩略目录快速跳转条 */}
+        <div className="mt-4 w-full max-w-[880px] flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+          {Array.from({ length: totalSheets + 1 }).map((_, idx) => {
+            const pageNum = idx === 0 ? '封面' : idx === totalSheets ? '封底' : `${2 * idx - 1}-${2 * idx}`;
+            return (
+              <button
+                key={idx}
+                onClick={() => engineRef.current?.goToSheet(idx)}
+                className={`shrink-0 h-8 px-3 rounded border text-xs transition-all cursor-pointer ${
+                  currentSheet === idx
+                    ? 'border-[#9B2D26] bg-[#9B2D26] text-white font-bold shadow-sm'
+                    : 'border-[#242220]/15 bg-white/70 hover:bg-white text-[#242220]/70 hover:text-[#242220]'
+                }`}
+              >
+                {pageNum}
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
