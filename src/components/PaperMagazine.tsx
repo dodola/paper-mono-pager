@@ -144,7 +144,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
-      containerRef.current?.parentElement?.requestFullscreen?.();
+      document.documentElement.requestFullscreen?.();
       setIsFullscreen(true);
     } else {
       document.exitFullscreen?.();
@@ -163,33 +163,32 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
     const l = leftPage ? CHINESE_PAGES[leftPage - 1]?.title || `第 ${leftPage} 页` : '';
     const r = rightPage ? CHINESE_PAGES[rightPage - 1]?.title || `第 ${rightPage} 页` : '';
     if (l && r) {
-      return `第 ${leftPage}、${rightPage} 页（${l} / ${r}）`;
+      return `第 ${leftPage} · ${rightPage} 页  ${l}`;
     }
-    return l ? `第 ${leftPage} 页（${l}）` : `第 ${rightPage} 页（${r}）`;
+    return l ? `第 ${leftPage} 页  ${l}` : `第 ${rightPage} 页  ${r}`;
   };
 
   return (
-    <div className={`relative flex flex-col items-center select-none ${className}`}>
-      {/* 3D 舞台区域 */}
-      <div className="relative w-full max-w-[1240px] px-4 md:px-8 flex flex-col items-center">
-        {/* Aspect Frame */}
+    <div className={`relative w-full flex flex-col items-center select-none ${className}`}>
+      {/* 3D 大画幅主舞台（按 1.44753 物理比例自适应最大化，标准视口达到 1181×816 巨幅展示） */}
+      <div className="relative w-full flex justify-center items-center">
         <div
-          className="relative w-full aspect-[1.44753] max-h-[calc(100vh-170px)] min-h-[360px] rounded-lg shadow-xl/5 border border-[#222222]/10 bg-[#f9f7f2] overflow-hidden"
+          className="relative max-w-full"
           style={{
-            boxShadow:
-              '0 24px 48px -12px rgba(0, 0, 0, 0.08), 0 12px 24px -8px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0,0,0,0.04)',
+            width: 'min(calc((100vh - 135px) * 1.44753), min(96vw, 1280px))',
+            aspectRatio: '1.44753',
           }}
         >
-          {/* Magazine 3D Engine Mount Point */}
+          {/* Magazine 3D Engine Mount Point: 完全透明无框，3D 物理光影自然投射在桌面 */}
           <div
             ref={containerRef}
             className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
           />
 
           {/* 交互提示气泡 */}
-          <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/80 px-4 py-1.5 text-xs text-white backdrop-blur-md opacity-85 transition-opacity hover:opacity-100">
-            <Sparkles className="size-3.5 text-[#e5b299]" />
-            <span>鼠标拖拽边缘或单击翻页 • 长按可极速连翻 • 支持键盘左右键</span>
+          <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-4 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity">
+            <Sparkles className="size-3 text-[#e5b299]" />
+            <span>单击或按住边缘拖拽翻页 · 按住不放极速连翻</span>
           </div>
 
           {/* 左右快捷翻页悬浮按钮 */}
@@ -197,7 +196,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
             onClick={() => engineRef.current?.flipPrev()}
             disabled={currentSheet <= 0}
             aria-label="上一页"
-            className="absolute left-3 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/70 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+            className="absolute -left-2 sm:left-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/80 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <ChevronLeft className="size-6" />
           </button>
@@ -205,114 +204,112 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
             onClick={() => engineRef.current?.flipNext()}
             disabled={currentSheet >= totalSheets}
             aria-label="下一页"
-            className="absolute right-3 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/70 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+            className="absolute -right-2 sm:right-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/80 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
           >
             <ChevronRight className="size-6" />
           </button>
         </div>
+      </div>
 
-        {/* 底部功能控制条 */}
-        <div className="mt-5 w-full max-w-[880px] flex flex-col sm:flex-row items-center justify-between gap-4 rounded-xl border border-[#222222]/10 bg-white/80 p-3.5 shadow-sm backdrop-blur-md">
-          {/* 页码与跨页状态 */}
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => engineRef.current?.goToSheet(0)}
-              title="回到封面"
-              className="p-1.5 rounded-md hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
-            >
-              <RotateCcw className="size-4" />
-            </button>
-            <div className="flex flex-col">
-              <span className="text-xs font-semibold tracking-wide text-[#242220] max-w-[280px] truncate">
-                {formatSpreadLabel()}
-              </span>
-              <span className="text-[11px] text-[#242220]/50">
-                跨页进度：{currentSheet} / {totalSheets}
-              </span>
-            </div>
+      {/* 底部紧凑精致控制条 */}
+      <div className="mt-3.5 w-full max-w-[1020px] px-3 flex flex-col sm:flex-row items-center justify-between gap-3 rounded-full border border-[#E4E0D6] bg-white/90 px-5 py-2.5 shadow-sm backdrop-blur-md">
+        {/* 页码与跨页状态 */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            onClick={() => engineRef.current?.goToSheet(0)}
+            title="回到封面"
+            className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+          >
+            <RotateCcw className="size-3.5" />
+          </button>
+          <span className="text-xs font-semibold tracking-wide text-[#242220] max-w-[320px] truncate">
+            {formatSpreadLabel()}
+          </span>
+          <span className="text-[11px] text-[#242220]/45">
+            ({currentSheet}/{totalSheets})
+          </span>
+        </div>
+
+        {/* 进度滑动条 */}
+        <div className="flex-1 w-full sm:w-auto mx-2 flex items-center gap-2">
+          <input
+            type="range"
+            min={0}
+            max={totalSheets}
+            value={currentSheet}
+            onChange={handleSliderChange}
+            className="w-full h-1 bg-[#E2DED4] rounded-lg appearance-none cursor-pointer accent-[#9B2D26]"
+          />
+        </div>
+
+        {/* 右侧控制选项 */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* 纸张色调切换 */}
+          <div className="flex items-center gap-1.5 border-r border-[#222]/10 pr-2.5">
+            <Palette className="size-3 text-[#242220]/45" />
+            {PAPER_THEMES.map((theme, i) => (
+              <button
+                key={theme.name}
+                onClick={() => changeTheme(i)}
+                title={`纸张色调：${theme.name}`}
+                className={`size-4 rounded-full border transition-all cursor-pointer ${
+                  selectedThemeIndex === i ? 'ring-2 ring-[#9B2D26] ring-offset-1 scale-110' : 'border-black/25 opacity-70 hover:opacity-100'
+                }`}
+                style={{ backgroundColor: theme.bg }}
+              />
+            ))}
           </div>
 
-          {/* 进度滑动条 */}
-          <div className="flex-1 w-full sm:w-auto mx-2 flex items-center gap-2">
-            <input
-              type="range"
-              min={0}
-              max={totalSheets}
-              value={currentSheet}
-              onChange={handleSliderChange}
-              className="w-full h-1.5 bg-[#e4e1d9] rounded-lg appearance-none cursor-pointer accent-[#9B2D26]"
-            />
-          </div>
+          {/* 自动连读 */}
+          <button
+            onClick={() => setAutoPlay((p) => !p)}
+            title={autoPlay ? '暂停自动翻页' : '开启自动连读'}
+            className={`px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+              autoPlay ? 'bg-[#9B2D26] text-white font-medium' : 'hover:bg-black/5 text-[#242220]'
+            }`}
+          >
+            {autoPlay ? <Pause className="size-3" /> : <Play className="size-3" />}
+            <span>{autoPlay ? '暂停' : '自动'}</span>
+          </button>
 
-          {/* 右侧控制选项 */}
-          <div className="flex items-center gap-2">
-            {/* 纸张色调切换 */}
-            <div className="flex items-center gap-1 border-r border-[#222]/10 pr-2">
-              <Palette className="size-3.5 text-[#242220]/50 mr-0.5" />
-              {PAPER_THEMES.map((theme, i) => (
-                <button
-                  key={theme.name}
-                  onClick={() => changeTheme(i)}
-                  title={`切换为：${theme.name}`}
-                  className={`size-5 rounded-full border transition-all cursor-pointer ${
-                    selectedThemeIndex === i ? 'ring-2 ring-[#9B2D26] ring-offset-1 scale-110' : 'border-black/20'
-                  }`}
-                  style={{ backgroundColor: theme.bg }}
-                />
-              ))}
-            </div>
+          {/* 音效 */}
+          <button
+            onClick={toggleSound}
+            title={soundEnabled ? '静音翻页声' : '开启纸张翻书音效'}
+            className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+          >
+            {soundEnabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5 text-red-500" />}
+          </button>
 
-            {/* 自动翻页 */}
+          {/* 全屏 */}
+          <button
+            onClick={toggleFullscreen}
+            title="切换全屏演示"
+            className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+          >
+            {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* 缩略目录快速跳转条（紧凑精简） */}
+      <div className="mt-2 w-full max-w-[1020px] flex items-center justify-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+        {Array.from({ length: totalSheets + 1 }).map((_, idx) => {
+          const pageNum = idx === 0 ? '封面' : idx === totalSheets ? '封底' : `${2 * idx - 1}-${2 * idx}`;
+          return (
             <button
-              onClick={() => setAutoPlay((p) => !p)}
-              title={autoPlay ? '暂停自动翻页' : '开启自动连读'}
-              className={`px-2.5 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
-                autoPlay ? 'bg-[#9B2D26] text-white' : 'hover:bg-black/5 text-[#242220]'
+              key={idx}
+              onClick={() => engineRef.current?.goToSheet(idx)}
+              className={`shrink-0 h-6 px-2.5 rounded text-[11px] transition-all cursor-pointer ${
+                currentSheet === idx
+                  ? 'bg-[#9B2D26] text-white font-bold shadow-xs'
+                  : 'bg-white/60 hover:bg-white text-[#242220]/60 hover:text-[#242220] border border-[#242220]/10'
               }`}
             >
-              {autoPlay ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
-              <span>{autoPlay ? '暂停' : '自动'}</span>
+              {pageNum}
             </button>
-
-            {/* 音效切换 */}
-            <button
-              onClick={toggleSound}
-              title={soundEnabled ? '静音翻页声' : '开启纸张翻书音效'}
-              className="p-1.5 rounded-md hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
-            >
-              {soundEnabled ? <Volume2 className="size-4" /> : <VolumeX className="size-4 text-red-500" />}
-            </button>
-
-            {/* 全屏模式 */}
-            <button
-              onClick={toggleFullscreen}
-              title="切换全屏沉浸模式"
-              className="p-1.5 rounded-md hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
-            >
-              {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-            </button>
-          </div>
-        </div>
-
-        {/* 缩略目录快速跳转条 */}
-        <div className="mt-4 w-full max-w-[880px] flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
-          {Array.from({ length: totalSheets + 1 }).map((_, idx) => {
-            const pageNum = idx === 0 ? '封面' : idx === totalSheets ? '封底' : `${2 * idx - 1}-${2 * idx}`;
-            return (
-              <button
-                key={idx}
-                onClick={() => engineRef.current?.goToSheet(idx)}
-                className={`shrink-0 h-8 px-3 rounded border text-xs transition-all cursor-pointer ${
-                  currentSheet === idx
-                    ? 'border-[#9B2D26] bg-[#9B2D26] text-white font-bold shadow-sm'
-                    : 'border-[#242220]/15 bg-white/70 hover:bg-white text-[#242220]/70 hover:text-[#242220]'
-                }`}
-              >
-                {pageNum}
-              </button>
-            );
-          })}
-        </div>
+          );
+        })}
       </div>
     </div>
   );
