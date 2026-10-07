@@ -446,6 +446,52 @@ export class MagazineEngine {
     }
   }
 
+  public updatePageContent(pageIndex: number, newContent: PageContent) {
+    if (pageIndex < 0 || pageIndex >= this.pageContents.length) return;
+    this.pageContents[pageIndex] = newContent;
+
+    const canvas = renderPageToCanvas(newContent, this.renderOptions);
+    this.pageCanvases[pageIndex] = canvas;
+
+    let tex = this.pageTextures[pageIndex];
+    const anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    if (!tex) {
+      tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = anisotropy;
+      this.pageTextures[pageIndex] = tex;
+    } else {
+      tex.image = canvas;
+      tex.needsUpdate = true;
+    }
+
+    this.renderer.initTexture(tex);
+
+    const sheetIndex = pageIndex >> 1;
+    const isBack = pageIndex % 2 === 1;
+    const sheet = this.sheets[sheetIndex];
+    if (sheet) {
+      if (!isBack) {
+        sheet.frontTex = tex;
+        (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
+        (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
+      } else {
+        sheet.sheetUniforms.uBackMap.value = tex;
+      }
+    }
+
+    this.needsRender = true;
+  }
+
+  public setAllPageContents(newContents: PageContent[]) {
+    this.pageContents = [...newContents];
+    this.renderAllPageTextures();
+  }
+
+  public getPageContents(): PageContent[] {
+    return [...this.pageContents];
+  }
+
   private cornerRollMax(deg: number): number {
     const rad = (Math.abs(deg) * Math.PI) / 180;
     const a = 1 - 0.6885 * Math.sin(rad);

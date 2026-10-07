@@ -3,6 +3,7 @@ import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
 import { CHINESE_PAGES, getAllBookText } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
+import { PageEditorDrawer } from './magazine/PageEditorDrawer';
 import {
   ChevronLeft,
   ChevronRight,
@@ -15,10 +16,13 @@ import {
   RotateCcw,
   Sparkles,
   Palette,
+  PenTool,
 } from 'lucide-react';
 
 export interface PaperMagazineProps {
   className?: string;
+  isEditMode?: boolean;
+  onToggleEditMode?: (mode: boolean) => void;
 }
 
 const PAPER_THEMES = [
@@ -30,10 +34,29 @@ const PAPER_THEMES = [
 
 const ALL_BOOK_TEXT = getAllBookText();
 
-export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) => {
+export const PaperMagazine: React.FC<PaperMagazineProps> = ({
+  className = '',
+  isEditMode: propIsEditMode,
+  onToggleEditMode,
+}) => {
   const stageWrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<MagazineEngine | null>(null);
+
+  const [internalEditMode, setInternalEditMode] = useState(false);
+  const isEditMode = propIsEditMode !== undefined ? propIsEditMode : internalEditMode;
+  const toggleEditMode = () => {
+    if (onToggleEditMode) {
+      onToggleEditMode(!isEditMode);
+    } else {
+      setInternalEditMode((prev) => !prev);
+    }
+  };
+
+  const [pages, setPages] = useState<PageContent[]>(() =>
+    JSON.parse(JSON.stringify(CHINESE_PAGES))
+  );
+  const [activeEditPageIndex, setActiveEditPageIndex] = useState(0);
 
   const [currentSheet, setCurrentSheet] = useState(0);
   const [leftPage, setLeftPage] = useState<number | null>(null);
@@ -97,7 +120,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
 
     const engine = new MagazineEngine({
       container: containerRef.current,
-      pageContents: CHINESE_PAGES,
+      pageContents: pages,
       patternUrl,
       renderOptions,
       onPageChange: (sheetIdx, left, right) => {
@@ -105,6 +128,11 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
         setLeftPage(left);
         setRightPage(right);
         pageSound.playFlip();
+        if (right !== null) {
+          setActiveEditPageIndex(right - 1);
+        } else if (left !== null) {
+          setActiveEditPageIndex(left - 1);
+        }
       },
     });
 
@@ -115,6 +143,39 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
       engine.dispose();
       engineRef.current = null;
     };
+  }, []);
+
+  const handleUpdatePage = useCallback((index: number, newPage: PageContent) => {
+    setPages((prev) => {
+      const next = [...prev];
+      next[index] = newPage;
+      return next;
+    });
+    engineRef.current?.updatePageContent(index, newPage);
+  }, []);
+
+  const handleResetPage = useCallback(
+    (index: number) => {
+      const original = JSON.parse(JSON.stringify(CHINESE_PAGES[index]));
+      handleUpdatePage(index, original);
+    },
+    [handleUpdatePage]
+  );
+
+  const handleResetAll = useCallback(() => {
+    const original = JSON.parse(JSON.stringify(CHINESE_PAGES));
+    setPages(original);
+    engineRef.current?.setAllPageContents(original);
+  }, []);
+
+  const handleImportPages = useCallback((newPages: PageContent[]) => {
+    setPages(newPages);
+    engineRef.current?.setAllPageContents(newPages);
+  }, []);
+
+  const handleGoToPage = useCallback((index: number) => {
+    const targetSheet = index === 0 ? 0 : Math.floor((index + 1) / 2);
+    engineRef.current?.goToSheet(targetSheet);
   }, []);
 
   const changeTheme = (idx: number) => {
@@ -196,10 +257,11 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
   };
 
   const formatSpreadLabel = () => {
-    if (currentSheet === 0) return '封面 · 卷首';
-    if (currentSheet === totalSheets) return '封底 · 版权页';
-    const l = leftPage ? CHINESE_PAGES[leftPage - 1]?.title || `第 ${leftPage} 页` : '';
-    const r = rightPage ? CHINESE_PAGES[rightPage - 1]?.title || `第 ${rightPage} 页` : '';
+    if (currentSheet === 0) return `封面 · ${pages[0]?.title || '卷首'}`;
+    if (currentSheet === totalSheets)
+      return `封底 · ${pages[pages.length - 1]?.title || '版权页'}`;
+    const l = leftPage ? pages[leftPage - 1]?.title || `第 ${leftPage} 页` : '';
+    const r = rightPage ? pages[rightPage - 1]?.title || `第 ${rightPage} 页` : '';
     if (l && r) {
       return `第 ${leftPage} · ${rightPage} 页 ${l}`;
     }
@@ -207,154 +269,189 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
   };
 
   return (
-    <div className={`relative size-full flex flex-col justify-between select-none ${className}`}>
-      {/* 1. 书籍主体展示区：自适应 Window 大小，填满中间所有可用空间 */}
+    <div className={`relative size-full flex overflow-hidden select-none ${className}`}>
+      {/* 页面动态排印编辑侧栏 */}
+      <PageEditorDrawer
+        isOpen={isEditMode}
+        onClose={toggleEditMode}
+        pages={pages}
+        activePageIndex={activeEditPageIndex}
+        onSelectPageIndex={setActiveEditPageIndex}
+        onUpdatePage={handleUpdatePage}
+        onResetPage={handleResetPage}
+        onResetAll={handleResetAll}
+        onGoToPage={handleGoToPage}
+        onImportPages={handleImportPages}
+      />
+
+      {/* 书籍 3D 舞台与吸底控制栏 */}
       <div
-        ref={stageWrapperRef}
-        className="relative flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden p-2 sm:p-4"
+        className={`flex-1 flex flex-col justify-between min-w-0 h-full overflow-hidden transition-all duration-300 ${
+          isEditMode ? 'sm:ml-[420px]' : ''
+        }`}
       >
+        {/* 1. 书籍主体展示区：自适应 Window 大小，填满中间所有可用空间 */}
         <div
-          className="relative transition-all duration-75"
-          style={{
-            width: `${stageSize.width}px`,
-            height: `${stageSize.height}px`,
-          }}
+          ref={stageWrapperRef}
+          className="relative flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden p-2 sm:p-4"
         >
-          {/* Magazine 3D Engine Mount Point */}
           <div
-            ref={containerRef}
-            className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
-          />
-
-          {/* 交互提示气泡 */}
-          <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity whitespace-nowrap">
-            <Sparkles className="size-3 text-[#e5b299]" />
-            <span>单击或拖拽边缘翻页 · 按住不放极速连翻</span>
-          </div>
-
-          {/* 左右快捷翻页悬浮按钮 */}
-          <button
-            onClick={() => engineRef.current?.flipPrev()}
-            disabled={currentSheet <= 0}
-            aria-label="上一页"
-            className="absolute -left-3 sm:-left-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+            className="relative transition-all duration-75"
+            style={{
+              width: `${stageSize.width}px`,
+              height: `${stageSize.height}px`,
+            }}
           >
-            <ChevronLeft className="size-6" />
-          </button>
-          <button
-            onClick={() => engineRef.current?.flipNext()}
-            disabled={currentSheet >= totalSheets}
-            aria-label="下一页"
-            className="absolute -right-3 sm:-right-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
-          >
-            <ChevronRight className="size-6" />
-          </button>
-        </div>
-      </div>
-
-      {/* 2. 底部控制栏与跳转胶囊：对齐窗口最底部 (Align Window Bottom) */}
-      <div className="w-full shrink-0 z-30 pb-3 pt-1.5 px-4 flex flex-col items-center gap-2 bg-[#F6F6F3]/95 backdrop-blur-sm border-t border-[#E8E4DC]/70">
-        {/* 控制条 */}
-        <div className="w-full max-w-[960px] flex items-center justify-between gap-3 rounded-full border border-[#E4E0D6] bg-white/90 px-4 py-2 shadow-sm">
-          {/* 左侧：回到封面与标题页码 */}
-          <div className="flex items-center gap-2.5 shrink-0">
-            <button
-              onClick={() => engineRef.current?.goToSheet(0)}
-              title="回到封面"
-              className="p-1 rounded-full hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
-            >
-              <RotateCcw className="size-3.5" />
-            </button>
-            <span className="text-xs font-semibold tracking-wide text-[#242220] max-w-[260px] sm:max-w-[340px] truncate">
-              {formatSpreadLabel()}
-            </span>
-            <span className="text-[11px] text-[#242220]/45 font-mono">
-              ({currentSheet}/{totalSheets})
-            </span>
-          </div>
-
-          {/* 中间：进度滑动条 */}
-          <div className="flex-1 w-full min-w-[80px] mx-2 flex items-center">
-            <input
-              type="range"
-              min={0}
-              max={totalSheets}
-              value={currentSheet}
-              onChange={handleSliderChange}
-              className="w-full h-1 bg-[#E2DED4] rounded-lg appearance-none cursor-pointer accent-[#9B2D26]"
+            {/* Magazine 3D Engine Mount Point */}
+            <div
+              ref={containerRef}
+              className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
             />
-          </div>
 
-          {/* 右侧：色调、自动、音效、全屏 */}
-          <div className="flex items-center gap-2 shrink-0">
-            {/* 纸张色调切换 */}
-            <div className="flex items-center gap-1.5 border-r border-[#222]/10 pr-2.5">
-              <Palette className="size-3 text-[#242220]/45" />
-              {PAPER_THEMES.map((theme, i) => (
-                <button
-                  key={theme.name}
-                  onClick={() => changeTheme(i)}
-                  title={`纸张色调：${theme.name}`}
-                  className={`size-4 rounded-full border transition-all cursor-pointer ${
-                    selectedThemeIndex === i
-                      ? 'ring-2 ring-[#9B2D26] ring-offset-1 scale-110'
-                      : 'border-black/25 opacity-70 hover:opacity-100'
-                  }`}
-                  style={{ backgroundColor: theme.bg }}
-                />
-              ))}
+            {/* 交互提示气泡 */}
+            <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity whitespace-nowrap">
+              <Sparkles className="size-3 text-[#e5b299]" />
+              <span>单击或拖拽边缘翻页 · 按住不放极速连翻</span>
             </div>
 
-            {/* 自动连读 */}
+            {/* 左右快捷翻页悬浮按钮 */}
             <button
-              onClick={() => setAutoPlay((p) => !p)}
-              title={autoPlay ? '暂停自动翻页' : '开启自动连读'}
-              className={`px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors cursor-pointer ${
-                autoPlay ? 'bg-[#9B2D26] text-white font-medium' : 'hover:bg-black/5 text-[#242220]'
-              }`}
+              onClick={() => engineRef.current?.flipPrev()}
+              disabled={currentSheet <= 0}
+              aria-label="上一页"
+              className="absolute -left-3 sm:-left-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
             >
-              {autoPlay ? <Pause className="size-3" /> : <Play className="size-3" />}
-              <span>{autoPlay ? '暂停' : '自动'}</span>
+              <ChevronLeft className="size-6" />
             </button>
-
-            {/* 音效 */}
             <button
-              onClick={toggleSound}
-              title={soundEnabled ? '静音翻页声' : '开启纸张翻书音效'}
-              className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+              onClick={() => engineRef.current?.flipNext()}
+              disabled={currentSheet >= totalSheets}
+              aria-label="下一页"
+              className="absolute -right-3 sm:-right-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
             >
-              {soundEnabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5 text-red-500" />}
-            </button>
-
-            {/* 全屏 */}
-            <button
-              onClick={toggleFullscreen}
-              title="切换全屏演示"
-              className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
-            >
-              {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+              <ChevronRight className="size-6" />
             </button>
           </div>
         </div>
 
-        {/* 缩略目录快速跳转条 */}
-        <div className="w-full max-w-[960px] flex items-center justify-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
-          {Array.from({ length: totalSheets + 1 }).map((_, idx) => {
-            const pageNum = idx === 0 ? '封面' : idx === totalSheets ? '封底' : `${2 * idx - 1}-${2 * idx}`;
-            return (
+        {/* 2. 底部控制栏与跳转胶囊：对齐窗口最底部 (Align Window Bottom) */}
+        <div className="w-full shrink-0 z-30 pb-3 pt-1.5 px-4 flex flex-col items-center gap-2 bg-[#F6F6F3]/95 backdrop-blur-sm border-t border-[#E8E4DC]/70">
+          {/* 控制条 */}
+          <div className="w-full max-w-[960px] flex items-center justify-between gap-3 rounded-full border border-[#E4E0D6] bg-white/90 px-4 py-2 shadow-sm">
+            {/* 左侧：回到封面与标题页码 */}
+            <div className="flex items-center gap-2.5 shrink-0">
               <button
-                key={idx}
-                onClick={() => engineRef.current?.goToSheet(idx)}
-                className={`shrink-0 h-6 px-2.5 rounded text-[11px] transition-all cursor-pointer ${
-                  currentSheet === idx
-                    ? 'bg-[#9B2D26] text-white font-bold shadow-xs'
-                    : 'bg-white/70 hover:bg-white text-[#242220]/60 hover:text-[#242220] border border-[#242220]/10'
+                onClick={() => engineRef.current?.goToSheet(0)}
+                title="回到封面"
+                className="p-1 rounded-full hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+              >
+                <RotateCcw className="size-3.5" />
+              </button>
+              <span className="text-xs font-semibold tracking-wide text-[#242220] max-w-[240px] sm:max-w-[320px] truncate">
+                {formatSpreadLabel()}
+              </span>
+              <span className="text-[11px] text-[#242220]/45 font-mono">
+                ({currentSheet}/{totalSheets})
+              </span>
+            </div>
+
+            {/* 中间：进度滑动条 */}
+            <div className="flex-1 w-full min-w-[60px] mx-2 flex items-center">
+              <input
+                type="range"
+                min={0}
+                max={totalSheets}
+                value={currentSheet}
+                onChange={handleSliderChange}
+                className="w-full h-1 bg-[#E2DED4] rounded-lg appearance-none cursor-pointer accent-[#9B2D26]"
+              />
+            </div>
+
+            {/* 右侧：色调、自动、音效、编辑、全屏 */}
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {/* 纸张色调切换 */}
+              <div className="flex items-center gap-1.5 border-r border-[#222]/10 pr-2">
+                <Palette className="size-3 text-[#242220]/45" />
+                {PAPER_THEMES.map((theme, i) => (
+                  <button
+                    key={theme.name}
+                    onClick={() => changeTheme(i)}
+                    title={`纸张色调：${theme.name}`}
+                    className={`size-4 rounded-full border transition-all cursor-pointer ${
+                      selectedThemeIndex === i
+                        ? 'ring-2 ring-[#9B2D26] ring-offset-1 scale-110'
+                        : 'border-black/25 opacity-70 hover:opacity-100'
+                    }`}
+                    style={{ backgroundColor: theme.bg }}
+                  />
+                ))}
+              </div>
+
+              {/* 编辑模式切换 */}
+              <button
+                onClick={toggleEditMode}
+                title={isEditMode ? '收起排印编辑侧栏' : '开启页面排印编辑模式'}
+                className={`px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+                  isEditMode
+                    ? 'bg-[#9B2D26] text-white font-medium shadow-xs'
+                    : 'hover:bg-black/5 text-[#242220]'
                 }`}
               >
-                {pageNum}
+                <PenTool className="size-3" />
+                <span>{isEditMode ? '编辑中' : '编辑'}</span>
               </button>
-            );
-          })}
+
+              {/* 自动连读 */}
+              <button
+                onClick={() => setAutoPlay((p) => !p)}
+                title={autoPlay ? '暂停自动翻页' : '开启自动连读'}
+                className={`px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors cursor-pointer ${
+                  autoPlay ? 'bg-[#9B2D26] text-white font-medium' : 'hover:bg-black/5 text-[#242220]'
+                }`}
+              >
+                {autoPlay ? <Pause className="size-3" /> : <Play className="size-3" />}
+                <span className="hidden sm:inline">{autoPlay ? '暂停' : '自动'}</span>
+              </button>
+
+              {/* 音效 */}
+              <button
+                onClick={toggleSound}
+                title={soundEnabled ? '静音翻页声' : '开启纸张翻书音效'}
+                className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+              >
+                {soundEnabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5 text-red-500" />}
+              </button>
+
+              {/* 全屏 */}
+              <button
+                onClick={toggleFullscreen}
+                title="切换全屏演示"
+                className="p-1 rounded hover:bg-black/5 text-[#242220] transition-colors cursor-pointer"
+              >
+                {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+              </button>
+            </div>
+          </div>
+
+          {/* 缩略目录快速跳转条 */}
+          <div className="w-full max-w-[960px] flex items-center justify-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+            {Array.from({ length: totalSheets + 1 }).map((_, idx) => {
+              const pageNum = idx === 0 ? '封面' : idx === totalSheets ? '封底' : `${2 * idx - 1}-${2 * idx}`;
+              return (
+                <button
+                  key={idx}
+                  onClick={() => engineRef.current?.goToSheet(idx)}
+                  className={`shrink-0 h-6 px-2.5 rounded text-[11px] transition-all cursor-pointer ${
+                    currentSheet === idx
+                      ? 'bg-[#9B2D26] text-white font-bold shadow-xs'
+                      : 'bg-white/70 hover:bg-white text-[#242220]/60 hover:text-[#242220] border border-[#242220]/10'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
