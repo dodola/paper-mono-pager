@@ -50,7 +50,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
     height: 816,
   });
 
-  const patternUrl = '/assets/pages/texture.webp';
+  const patternUrl = `${import.meta.env.BASE_URL}assets/pages/texture.webp`;
 
   // 监听容器大小变化，自适应最大化书籍
   useEffect(() => {

@@ -1,11 +1,14 @@
 # 📖 Paper Mono Pager — 霞鹜文楷 3D 物理翻页书
 
+[![Demo](https://img.shields.io/badge/Demo-在线演示-success.svg)](https://dodola.github.io/paper-mono-pager/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Three.js](https://img.shields.io/badge/Three.js-r180-black.svg)](https://threejs.org/)
 [![Vite](https://img.shields.io/badge/Vite-6.x-646CFF.svg)](https://vitejs.dev/)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
 [![Font](https://img.shields.io/badge/Font-LXGW_WenKai-9B2D26.svg)](https://github.com/lxgw/LxgwWenKai)
 
+> 🔗 **在线演示 (Demo)**: [https://dodola.github.io/paper-mono-pager/](https://dodola.github.io/paper-mono-pager/)
+> 
 > 极致复刻 [paper.design/mono](https://paper.design/mono) 的 3D WebGL 物理真实卷曲翻页算法，结合中文出版物经典网格排印与开源中文字体 **霞鹜文楷（LXGW WenKai）**，实现纯文本实时渲染的典藏级数字古籍阅读体验。
 
 ---
