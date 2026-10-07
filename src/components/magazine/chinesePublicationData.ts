@@ -258,9 +258,8 @@ export const CHINESE_PAGES: PageContent[] = [
     colophonDetails: [
       { key: '作　　者', value: '苏轼 · 朱自清 · 林徽因 等' },
       { key: '出 版 人', value: '文心雅集编纂处' },
-      { key: '版式设计', value: '文心排印实验室' },
-      { key: '正文字体', value: '思源宋体（Noto Serif SC）' },
-      { key: '字　　体', value: '中文字样出版排印专用系列' },
+      { key: '正文字体', value: '霞鹜文楷（LXGW WenKai）' },
+      { key: '字体设计', value: '落霞孤鹜 · 开源楷体典藏' },
       { key: '开　　本', value: '16开（1440 × 1983 典藏比例）' },
       { key: '印　　张', value: '1.0 印张 · 全书十六页双面' },
       { key: '字　　数', value: '一万二千言' },
@@ -271,3 +270,22 @@ export const CHINESE_PAGES: PageContent[] = [
     sealText: '文心出版局',
   },
 ];
+
+export function getAllBookText(): string {
+  const parts: string[] = [];
+  for (const p of CHINESE_PAGES) {
+    if (p.title) parts.push(p.title);
+    if (p.subtitle) parts.push(p.subtitle);
+    if (p.author) parts.push(p.author);
+    if (p.chapterNumber) parts.push(p.chapterNumber);
+    if (p.headerText) parts.push(p.headerText);
+    if (p.dropCap) parts.push(p.dropCap);
+    if (p.paragraphs) parts.push(...p.paragraphs);
+    if (p.poetryLines) parts.push(...p.poetryLines);
+    if (p.notes) parts.push(...p.notes);
+    if (p.tocItems) p.tocItems.forEach((t) => parts.push(t.title, t.author, t.page));
+    if (p.colophonDetails) p.colophonDetails.forEach((c) => parts.push(c.key, c.value));
+    if (p.sealText) parts.push(p.sealText);
+  }
+  return parts.join('');
+}

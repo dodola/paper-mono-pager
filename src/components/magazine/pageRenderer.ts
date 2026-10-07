@@ -4,8 +4,9 @@ import { PageContent } from './chinesePublicationData';
 const CANVAS_WIDTH = 1440;
 const CANVAS_HEIGHT = 1983; // 1440 * 1.37708
 
-const SERIF_FONT = '"Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif';
-const KAI_FONT = '"KaiTi", "STKaiti", "Noto Serif SC", serif';
+const WENKAI_FONT = '"LXGW WenKai", "LXGW WenKai Mono", "KaiTi", "STKaiti", "Noto Serif SC", "Songti SC", "STSong", serif';
+const SERIF_FONT = WENKAI_FONT;
+const KAI_FONT = WENKAI_FONT;
 
 export interface RenderOptions {
   paperColor?: string;

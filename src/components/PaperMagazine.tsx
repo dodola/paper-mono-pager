@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
-import { CHINESE_PAGES } from './magazine/chinesePublicationData';
+import { CHINESE_PAGES, getAllBookText } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
 import {
   ChevronLeft,
@@ -27,6 +27,8 @@ const PAPER_THEMES = [
   { name: '暖调象牙', bg: '#FDFBF7', text: '#25211E', accent: '#A03B26' },
   { name: '怀旧古纸', bg: '#F5EFE6', text: '#2C2723', accent: '#8C2B21' },
 ];
+
+const ALL_BOOK_TEXT = getAllBookText();
 
 export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) => {
   const stageWrapperRef = useRef<HTMLDivElement>(null);
@@ -354,6 +356,16 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({ className = '' }) 
             );
           })}
         </div>
+      </div>
+
+      {/* 预热并异步加载霞鹜文楷字体切片 (LXGW WenKai Font Preloader) */}
+      <div
+        aria-hidden="true"
+        className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none select-none overflow-hidden h-0 w-0"
+        style={{ fontFamily: '"LXGW WenKai", "LXGW WenKai Mono", serif' }}
+      >
+        <span style={{ fontWeight: 400 }}>{ALL_BOOK_TEXT}</span>
+        <span style={{ fontWeight: 700 }}>{ALL_BOOK_TEXT}</span>
       </div>
     </div>
   );

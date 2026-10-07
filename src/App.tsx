@@ -15,13 +15,13 @@ export default function App() {
             文心雅集
           </span>
           <span className="text-xs text-[#242220]/40 pl-1 hidden sm:inline">
-            · 中文经典散文典藏本
+            · 霞鹜文楷 中文典藏本
           </span>
         </div>
 
         <div className="flex items-center gap-4 text-xs">
           <span className="text-[#242220]/50 hidden md:inline">
-            16 页全书纯文本实时渲染 · 真实 3D 物理卷曲
+            16 页全书霞鹜文楷实时排印 · 真实 3D 物理卷曲
           </span>
           <a
             href="https://paper.design/mono"

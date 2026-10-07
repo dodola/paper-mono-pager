@@ -218,6 +218,15 @@ export class MagazineEngine {
     this.initPatternTexture();
     this.renderAllPageTextures();
 
+    // Re-render once web fonts (such as LXGW WenKai) finish loading in browser
+    if (typeof document !== 'undefined' && 'fonts' in document) {
+      document.fonts.ready.then(() => {
+        if (!this.isDisposed) {
+          this.renderAllPageTextures();
+        }
+      });
+    }
+
     // Start animation loop
     this.renderer.setAnimationLoop(this.animate.bind(this));
   }
