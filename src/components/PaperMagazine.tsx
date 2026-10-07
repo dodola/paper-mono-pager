@@ -3,7 +3,7 @@ import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
 import { CHINESE_PAGES, getAllBookText } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
-import { PageEditorDrawer } from './magazine/PageEditorDrawer';
+import { InPage3DEditor } from './magazine/InPage3DEditor';
 import {
   ChevronLeft,
   ChevronRight,
@@ -269,70 +269,75 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   };
 
   return (
-    <div className={`relative size-full flex overflow-hidden select-none ${className}`}>
-      {/* 页面动态排印编辑侧栏 */}
-      <PageEditorDrawer
-        isOpen={isEditMode}
-        onClose={toggleEditMode}
-        pages={pages}
-        activePageIndex={activeEditPageIndex}
-        onSelectPageIndex={setActiveEditPageIndex}
-        onUpdatePage={handleUpdatePage}
-        onResetPage={handleResetPage}
-        onResetAll={handleResetAll}
-        onGoToPage={handleGoToPage}
-        onImportPages={handleImportPages}
-      />
-
-      {/* 书籍 3D 舞台与吸底控制栏 */}
+    <div className={`relative size-full flex flex-col justify-between overflow-hidden select-none ${className}`}>
+      {/* 1. 书籍主体展示区：自适应 Window 大小，填满中间所有可用空间 */}
       <div
-        className={`flex-1 flex flex-col justify-between min-w-0 h-full overflow-hidden transition-all duration-300 ${
-          isEditMode ? 'sm:ml-[420px]' : ''
-        }`}
+        ref={stageWrapperRef}
+        className="relative flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden p-2 sm:p-4"
       >
-        {/* 1. 书籍主体展示区：自适应 Window 大小，填满中间所有可用空间 */}
         <div
-          ref={stageWrapperRef}
-          className="relative flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden p-2 sm:p-4"
+          className="relative transition-all duration-75"
+          style={{
+            width: `${stageSize.width}px`,
+            height: `${stageSize.height}px`,
+          }}
         >
+          {/* Magazine 3D Engine Mount Point */}
           <div
-            className="relative transition-all duration-75"
-            style={{
-              width: `${stageSize.width}px`,
-              height: `${stageSize.height}px`,
-            }}
-          >
-            {/* Magazine 3D Engine Mount Point */}
-            <div
-              ref={containerRef}
-              className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
-            />
+            ref={containerRef}
+            className="absolute inset-0 size-full cursor-grab active:cursor-grabbing"
+          />
 
-            {/* 交互提示气泡 */}
+          {/* 直接在 3D 书页表面进行的可视化页面编辑器 */}
+          {isEditMode && (
+            <InPage3DEditor
+              stageWidth={stageSize.width}
+              stageHeight={stageSize.height}
+              currentSheet={currentSheet}
+              totalSheets={totalSheets}
+              leftPageNum={leftPage}
+              rightPageNum={rightPage}
+              pages={pages}
+              onUpdatePage={handleUpdatePage}
+              onResetPage={handleResetPage}
+              onResetAll={handleResetAll}
+              onGoToSheet={(idx) => engineRef.current?.goToSheet(idx)}
+              onCloseEditMode={toggleEditMode}
+              onImportPages={handleImportPages}
+            />
+          )}
+
+          {/* 交互提示气泡 (非编辑模式下显示) */}
+          {!isEditMode && (
             <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity whitespace-nowrap">
               <Sparkles className="size-3 text-[#e5b299]" />
               <span>单击或拖拽边缘翻页 · 按住不放极速连翻</span>
             </div>
+          )}
 
-            {/* 左右快捷翻页悬浮按钮 */}
-            <button
-              onClick={() => engineRef.current?.flipPrev()}
-              disabled={currentSheet <= 0}
-              aria-label="上一页"
-              className="absolute -left-3 sm:-left-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
-            >
-              <ChevronLeft className="size-6" />
-            </button>
-            <button
-              onClick={() => engineRef.current?.flipNext()}
-              disabled={currentSheet >= totalSheets}
-              aria-label="下一页"
-              className="absolute -right-3 sm:-right-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
-            >
-              <ChevronRight className="size-6" />
-            </button>
-          </div>
+          {/* 左右快捷翻页悬浮按钮 (非编辑模式下显示) */}
+          {!isEditMode && (
+            <>
+              <button
+                onClick={() => engineRef.current?.flipPrev()}
+                disabled={currentSheet <= 0}
+                aria-label="上一页"
+                className="absolute -left-3 sm:-left-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+              >
+                <ChevronLeft className="size-6" />
+              </button>
+              <button
+                onClick={() => engineRef.current?.flipNext()}
+                disabled={currentSheet >= totalSheets}
+                aria-label="下一页"
+                className="absolute -right-3 sm:-right-1 top-1/2 -translate-y-1/2 z-20 size-11 rounded-full bg-white/85 hover:bg-white text-[#242220] shadow-md border border-[#222]/10 flex items-center justify-center transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none active:scale-95 cursor-pointer"
+              >
+                <ChevronRight className="size-6" />
+              </button>
+            </>
+          )}
         </div>
+      </div>
 
         {/* 2. 底部控制栏与跳转胶囊：对齐窗口最底部 (Align Window Bottom) */}
         <div className="w-full shrink-0 z-30 pb-3 pt-1.5 px-4 flex flex-col items-center gap-2 bg-[#F6F6F3]/95 backdrop-blur-sm border-t border-[#E8E4DC]/70">
@@ -453,9 +458,8 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
             })}
           </div>
         </div>
-      </div>
 
-      {/* 预热并异步加载霞鹜文楷字体切片 (LXGW WenKai Font Preloader) */}
+        {/* 预热并异步加载霞鹜文楷字体切片 (LXGW WenKai Font Preloader) */}
       <div
         aria-hidden="true"
         className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none select-none overflow-hidden h-0 w-0"
