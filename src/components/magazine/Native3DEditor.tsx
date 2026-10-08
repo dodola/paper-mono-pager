@@ -1,7 +1,22 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { PageContent, CHINESE_PAGES } from './chinesePublicationData';
-import { PageLayoutElement, getPageLayoutElements, findLayoutElementAtCoords } from './pageLayout';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { PageContent } from './chinesePublicationData';
+import {
+  PageLayoutElement,
+  getCachedLayoutElements,
+  findLayoutElementAtCoords,
+} from './pageLayout';
 import { MagazineEngine } from './MagazineEngine';
+import { applyTextOverride, PageEditState } from './pageRenderer';
+import { caretGeometry, indexAtPoint, moveCaretVertically } from './textMetrics';
+import {
+  insertParagraph,
+  removeParagraph,
+  splitParagraph,
+  mergeWithPrevious,
+  supportsParagraphs,
+  validateImportedPages,
+  EditResult,
+} from './pageEdit';
 import {
   Check,
   RotateCcw,
@@ -18,8 +33,6 @@ import {
 
 export interface Native3DEditorProps {
   engine: MagazineEngine | null;
-  stageWidth: number;
-  stageHeight: number;
   currentSheet: number;
   totalSheets: number;
   leftPageNum: number | null;
@@ -27,13 +40,19 @@ export interface Native3DEditorProps {
   pages: PageContent[];
   onUpdatePage: (pageIndex: number, newPage: PageContent) => void;
   onResetPage: (pageIndex: number) => void;
-  onResetAll: () => void;
   onGoToSheet: (sheetIdx: number) => void;
   onCloseEditMode: () => void;
   onImportPages: (newPages: PageContent[]) => void;
 }
 
+interface Target {
+  pageIndex: number;
+  id: string;
+}
+
 const SEAL_PRESETS = ['澄怀', '知行', '文心', '雅集', '致虚', '守静', '逸兴', '栖迟'];
+const SEAL_PAGE_TYPES: PageContent['type'][] = ['cover', 'colophon', 'frontispiece', 'chapter'];
+const CHROME_ATTR = 'data-editor-chrome';
 
 export const Native3DEditor: React.FC<Native3DEditorProps> = ({
   engine,
@@ -44,434 +63,525 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
   pages,
   onUpdatePage,
   onResetPage,
-  onResetAll,
   onGoToSheet,
   onCloseEditMode,
   onImportPages,
 }) => {
-  // 当前处于选中/激活编辑态的排印元素
-  const [activeElement, setActiveElement] = useState<PageLayoutElement | null>(null);
-  const [hoveredElementId, setHoveredElementId] = useState<string | null>(null);
-  const [hoveredPageIndex, setHoveredPageIndex] = useState<number | null>(null);
-
-  // 隐藏式 IME 代理输入框状态
-  const [inputText, setInputText] = useState('');
-  const [proxyPos, setProxyPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const proxyInputRef = useRef<HTMLTextAreaElement>(null);
-  const isComposingRef = useRef(false);
-
-  // 闪烁光标状态 (Blinking Caret)
-  const [caretVisible, setCaretVisible] = useState(true);
-
-  // 印章快捷弹出窗
+  // 仅工具栏需要的状态走 React；高频的 hover/光标/选区全部走 ref，避免重渲染
+  const [active, setActive] = useState<Target | null>(null);
   const [showSealModal, setShowSealModal] = useState(false);
   const [customSealText, setCustomSealText] = useState('');
-
-  // JSON 导入导出弹窗
   const [showImportModal, setShowImportModal] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [importError, setImportError] = useState('');
 
-  // 保持当前页面的有效 pageIndex
-  const activePageIndex = activeElement
-    ? activeElement.pageIndex
+  const stageRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  const activeRef = useRef<Target | null>(null);
+  const hoverRef = useRef<Target | null>(null);
+  const selRef = useRef({ start: 0, end: 0 });
+  const caretOnRef = useRef(true);
+  const lastActivityRef = useRef(0);
+  const dragRef = useRef<{ target: Target; anchor: number } | null>(null);
+  const rafRef = useRef(0);
+  const lastMoveRef = useRef<{ x: number; y: number } | null>(null);
+
+  const layoutOf = (pageIndex: number) => {
+    const page = pagesRef.current[pageIndex];
+    return page ? getCachedLayoutElements(page, pageIndex) : [];
+  };
+  const findElement = (t: Target | null) =>
+    t ? layoutOf(t.pageIndex).find((e) => e.id === t.id) ?? null : null;
+
+  const activeElement = useMemo(() => {
+    if (!active) return null;
+    const page = pages[active.pageIndex];
+    return page
+      ? getCachedLayoutElements(page, active.pageIndex).find((e) => e.id === active.id) ?? null
+      : null;
+  }, [pages, active]);
+
+  const activePageIndex = active
+    ? active.pageIndex
     : rightPageNum !== null
     ? rightPageNum - 1
     : leftPageNum !== null
     ? leftPageNum - 1
     : 0;
+  const activePage = pages[activePageIndex];
 
-  // 1. 启动 Native 3D Editor 模式，退出时清理状态
+  // ---------- 绘制 ----------
+  const editStateFor = (pageIndex: number): PageEditState | null => {
+    const a = activeRef.current;
+    const h = hoverRef.current;
+    const act = a && a.pageIndex === pageIndex ? a : null;
+    const hov = h && h.pageIndex === pageIndex ? h.id : null;
+    if (!act && !hov) return null;
+    return {
+      activeElementId: act?.id ?? null,
+      hoveredElementId: hov,
+      caretVisible: caretOnRef.current,
+      selectionStart: selRef.current.start,
+      selectionEnd: selRef.current.end,
+    };
+  };
+  const paint = (pageIndex: number, render = true) =>
+    engine?.updatePageEditState(pageIndex, editStateFor(pageIndex), { render });
+
+  const touchCaret = () => {
+    lastActivityRef.current = Date.now();
+    caretOnRef.current = true;
+  };
+
+  /** IME 候选窗跟随光标 */
+  const updateProxyPos = () => {
+    const el = findElement(activeRef.current);
+    const ta = taRef.current;
+    if (!el || !ta || !engine) return;
+    const g = caretGeometry(el.style, el.text, selRef.current.end);
+    const p = engine.getClientCoordsFromCanvas(el.pageIndex, g.x, g.top + g.height);
+    if (p) {
+      ta.style.left = `${p.x}px`;
+      ta.style.top = `${p.y}px`;
+    }
+  };
+
+  const commitPage = (pageIndex: number, page: PageContent) => {
+    pagesRef.current = pagesRef.current.map((p, i) => (i === pageIndex ? page : p));
+    onUpdatePage(pageIndex, page);
+  };
+
+  const syncSelection = () => {
+    const ta = taRef.current;
+    if (!ta || !activeRef.current) return;
+    const start = Math.min(ta.selectionStart, ta.selectionEnd);
+    const end = Math.max(ta.selectionStart, ta.selectionEnd);
+    if (start === selRef.current.start && end === selRef.current.end) return;
+    selRef.current = { start, end };
+    touchCaret();
+    paint(activeRef.current.pageIndex);
+    updateProxyPos();
+  };
+
+  // ---------- 激活 / 取消激活 ----------
+  const activate = (el: PageLayoutElement, caret?: number) => {
+    const prev = activeRef.current;
+    const next = { pageIndex: el.pageIndex, id: el.id };
+    activeRef.current = next;
+    setActive(next);
+
+    const ta = taRef.current;
+    if (ta) {
+      ta.value = el.text;
+      if (el.maxLength) ta.maxLength = el.maxLength;
+      else ta.removeAttribute('maxlength');
+      ta.focus({ preventScroll: true });
+      if (el.type === 'seal') ta.select();
+      else {
+        const c = Math.max(0, Math.min(caret ?? el.text.length, el.text.length));
+        ta.setSelectionRange(c, c);
+      }
+      selRef.current = { start: ta.selectionStart, end: ta.selectionEnd };
+    }
+    touchCaret();
+    if (prev && prev.pageIndex !== next.pageIndex) paint(prev.pageIndex);
+    paint(next.pageIndex);
+    updateProxyPos();
+
+    if (el.type === 'seal') {
+      setCustomSealText(el.text);
+      setShowSealModal(true);
+    }
+  };
+
+  /** 离开空段落时自动清理，返回被删段落的下标 */
+  const pruneEmptyActive = (): { pageIndex: number; index: number } | null => {
+    const el = findElement(activeRef.current);
+    if (!el || el.type !== 'paragraph' || el.text !== '' || el.paragraphIndex === undefined) return null;
+    const page = pagesRef.current[el.pageIndex];
+    commitPage(el.pageIndex, removeParagraph(page, el.paragraphIndex).page);
+    return { pageIndex: el.pageIndex, index: el.paragraphIndex };
+  };
+
+  const deactivate = (prune = true) => {
+    const prev = activeRef.current;
+    if (!prev) return;
+    if (prune) pruneEmptyActive();
+    activeRef.current = null;
+    setActive(null);
+    taRef.current?.blur();
+    paint(prev.pageIndex);
+  };
+
+  const applyEdit = (pageIndex: number, result: EditResult) => {
+    commitPage(pageIndex, result.page);
+    if (result.focusId) {
+      const el = layoutOf(pageIndex).find((e) => e.id === result.focusId);
+      if (el) {
+        activate(el, result.caret);
+        return;
+      }
+    }
+    deactivate(false);
+  };
+
+  // ---------- 生命周期 ----------
   useEffect(() => {
     if (!engine) return;
     engine.setEditMode(true);
-
     return () => {
+      cancelAnimationFrame(rafRef.current);
       engine.setEditMode(false);
       engine.clearAllEditStates();
     };
   }, [engine]);
 
-  // 2. 原生 3D 闪烁打字光标定时器 (530ms 墨笔光标呼吸闪烁)
+  // 翻页后上一页的编辑目标已不可见：收起选中与悬停
   useEffect(() => {
-    if (!activeElement || !engine) return;
+    const h = hoverRef.current;
+    hoverRef.current = null;
+    if (h) paint(h.pageIndex);
+    deactivate();
+    if (stageRef.current) stageRef.current.style.cursor = 'default';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSheet]);
 
+  // 光标闪烁：输入后常亮，空闲才闪；仅重合成当前页覆盖层
+  useEffect(() => {
+    if (!active || !engine) return;
     const timer = setInterval(() => {
-      setCaretVisible((prev) => {
-        const next = !prev;
-        engine.updatePageEditState(activeElement.pageIndex, {
-          activeElementId: activeElement.id,
-          activeTextOverride: inputText,
-          caretVisible: next,
-        });
-        return next;
-      });
+      const a = activeRef.current;
+      if (!a) return;
+      if (Date.now() - lastActivityRef.current < 700) {
+        if (caretOnRef.current) return;
+        caretOnRef.current = true;
+      } else {
+        caretOnRef.current = !caretOnRef.current;
+      }
+      paint(a.pageIndex);
     }, 530);
-
     return () => clearInterval(timer);
-  }, [activeElement, engine, inputText]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.pageIndex, active?.id, engine]);
 
-  // 当当前激活元素改变时，同步更新隐藏式输入框内容
-  useEffect(() => {
-    if (activeElement) {
-      setInputText(activeElement.text || '');
-      // 延迟微任务聚焦，防止移动端或快捷键跳动
-      setTimeout(() => {
-        if (proxyInputRef.current) {
-          proxyInputRef.current.focus();
-          proxyInputRef.current.select();
-        }
-      }, 30);
-    }
-  }, [activeElement]);
+  // ---------- 鼠标 ----------
+  const isChrome = (t: EventTarget | null) =>
+    t instanceof Element && t.closest(`[${CHROME_ATTR}]`) !== null;
 
-  // 3. 鼠标在 3D 书本表面移动：高精度 3D 射线拾取与版式元素 Hover 判定
-  const handleStageMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!engine) return;
-
-      const coords = engine.getCanvasCoordsFromClient(e.clientX, e.clientY);
-      if (!coords) {
-        if (hoveredElementId && hoveredPageIndex !== null) {
-          engine.updatePageEditState(hoveredPageIndex, {
-            activeElementId: activeElement?.pageIndex === hoveredPageIndex ? activeElement.id : null,
-            activeTextOverride: activeElement?.pageIndex === hoveredPageIndex ? inputText : undefined,
-            caretVisible,
-            hoveredElementId: null,
-          });
-          setHoveredElementId(null);
-          setHoveredPageIndex(null);
-        }
-        return;
-      }
-
-      const page = pages[coords.pageIndex];
-      if (!page) return;
-
-      const elements = getPageLayoutElements(page, coords.pageIndex);
-      const hit = findLayoutElementAtCoords(elements, coords.canvasX, coords.canvasY);
-
-      if (hit) {
-        if (hit.id !== hoveredElementId || coords.pageIndex !== hoveredPageIndex) {
-          setHoveredElementId(hit.id);
-          setHoveredPageIndex(coords.pageIndex);
-
-          engine.updatePageEditState(coords.pageIndex, {
-            activeElementId: activeElement?.pageIndex === coords.pageIndex ? activeElement.id : null,
-            activeTextOverride: activeElement?.pageIndex === coords.pageIndex ? inputText : undefined,
-            caretVisible,
-            hoveredElementId: hit.id,
-          });
-        }
-      } else {
-        if (hoveredElementId) {
-          engine.updatePageEditState(coords.pageIndex, {
-            activeElementId: activeElement?.pageIndex === coords.pageIndex ? activeElement.id : null,
-            activeTextOverride: activeElement?.pageIndex === coords.pageIndex ? inputText : undefined,
-            caretVisible,
-            hoveredElementId: null,
-          });
-          setHoveredElementId(null);
-          setHoveredPageIndex(null);
-        }
-      }
-    },
-    [engine, pages, hoveredElementId, hoveredPageIndex, activeElement, inputText, caretVisible]
-  );
-
-  // 4. 鼠标点击 3D 书本：精准激活选中文本块，聚焦输入代理
-  const handleStageClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!engine) return;
-
-      const coords = engine.getCanvasCoordsFromClient(e.clientX, e.clientY);
-      if (!coords) {
-        // 点击空白处取消选中
-        if (activeElement) {
-          engine.updatePageEditState(activeElement.pageIndex, null);
-          setActiveElement(null);
-        }
-        return;
-      }
-
-      const page = pages[coords.pageIndex];
-      if (!page) return;
-
-      const elements = getPageLayoutElements(page, coords.pageIndex);
-      const hit = findLayoutElementAtCoords(elements, coords.canvasX, coords.canvasY);
-
-      if (hit) {
-        // 清理旧激活页的状态
-        if (activeElement && activeElement.pageIndex !== coords.pageIndex) {
-          engine.updatePageEditState(activeElement.pageIndex, null);
-        }
-
-        setActiveElement(hit);
-        setInputText(hit.text || '');
-        setProxyPos({ x: e.clientX, y: e.clientY });
-
-        // 原生 3D 材质热重绘
-        engine.updatePageEditState(coords.pageIndex, {
-          activeElementId: hit.id,
-          activeTextOverride: hit.text || '',
-          caretVisible: true,
-          hoveredElementId: null,
-        });
-
-        // 如果命中的是朱砂印章，则同步打开印章面板
-        if (hit.type === 'seal') {
-          setCustomSealText(hit.text || '');
-          setShowSealModal(true);
-        }
-      } else {
-        if (activeElement) {
-          engine.updatePageEditState(activeElement.pageIndex, null);
-          setActiveElement(null);
-        }
-      }
-    },
-    [engine, pages, activeElement]
-  );
-
-  // 5. 键盘输入处理（完全支持中文拼音输入法 IME 与退格换行）
-  const handleProxyInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setInputText(val);
-
-    if (!activeElement || !engine) return;
-
-    // 即时在 3D 纸张纹理上渲染新文本
-    engine.updatePageEditState(activeElement.pageIndex, {
-      activeElementId: activeElement.id,
-      activeTextOverride: val,
-      caretVisible: true,
-    });
-
-    // 更新页面数据模型
-    const pageIdx = activeElement.pageIndex;
-    const page = pages[pageIdx];
-    if (!page) return;
-
-    const updatedPage: PageContent = { ...page };
-    const elId = activeElement.id;
-
-    if (elId === 'title') {
-      updatedPage.title = val;
-    } else if (elId === 'subtitle') {
-      updatedPage.subtitle = val;
-    } else if (elId === 'author') {
-      updatedPage.author = val;
-    } else if (elId === 'chapterNumber') {
-      updatedPage.chapterNumber = val;
-    } else if (elId === 'header') {
-      updatedPage.headerText = val;
-    } else if (elId === 'seal') {
-      updatedPage.sealText = val;
-    } else if (elId.startsWith('paragraph-')) {
-      const pIdx = activeElement.paragraphIndex ?? 0;
-      if (updatedPage.paragraphs && pIdx < updatedPage.paragraphs.length) {
-        updatedPage.paragraphs = [...updatedPage.paragraphs];
-        updatedPage.paragraphs[pIdx] = val;
-      }
-    } else if (elId.startsWith('poetry-')) {
-      const pIdx = activeElement.poetryIndex ?? 0;
-      if (updatedPage.poetryLines && pIdx < updatedPage.poetryLines.length) {
-        updatedPage.poetryLines = [...updatedPage.poetryLines];
-        updatedPage.poetryLines[pIdx] = val;
-      }
-    } else if (elId.startsWith('note-')) {
-      const nIdx = activeElement.noteIndex ?? 0;
-      if (updatedPage.notes && nIdx < updatedPage.notes.length) {
-        updatedPage.notes = [...updatedPage.notes];
-        updatedPage.notes[nIdx] = val;
-      }
-    } else if (elId.startsWith('toc-')) {
-      const tIdx = activeElement.tocIndex ?? 0;
-      if (updatedPage.tocItems && tIdx < updatedPage.tocItems.length) {
-        updatedPage.tocItems = [...updatedPage.tocItems];
-        updatedPage.tocItems[tIdx] = { ...updatedPage.tocItems[tIdx], title: val };
-      }
-    } else if (elId.startsWith('colophon-')) {
-      const cIdx = activeElement.colophonIndex ?? 0;
-      if (updatedPage.colophonDetails && cIdx < updatedPage.colophonDetails.length) {
-        updatedPage.colophonDetails = [...updatedPage.colophonDetails];
-        updatedPage.colophonDetails[cIdx] = { ...updatedPage.colophonDetails[cIdx], value: val };
-      }
-    }
-
-    onUpdatePage(pageIdx, updatedPage);
+  const pick = (clientX: number, clientY: number) => {
+    const coords = engine?.getCanvasCoordsFromClient(clientX, clientY);
+    if (!coords) return null;
+    const hit = findLayoutElementAtCoords(layoutOf(coords.pageIndex), coords.canvasX, coords.canvasY);
+    return { coords, hit };
   };
 
-  const handleProxyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const processHover = () => {
+    rafRef.current = 0;
+    const m = lastMoveRef.current;
+    if (!m || !engine) return;
+    const picked = pick(m.x, m.y);
+    const hit = picked?.hit ?? null;
+    const prev = hoverRef.current;
+    if (prev?.id === hit?.id && prev?.pageIndex === hit?.pageIndex) return;
+    hoverRef.current = hit ? { pageIndex: hit.pageIndex, id: hit.id } : null;
+    if (prev && prev.pageIndex !== hit?.pageIndex) paint(prev.pageIndex);
+    if (hit) paint(hit.pageIndex);
+    else if (prev) paint(prev.pageIndex);
+    if (stageRef.current) {
+      stageRef.current.style.cursor = hit ? (hit.type === 'seal' ? 'pointer' : 'text') : 'default';
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!engine) return;
+    const drag = dragRef.current;
+    if (drag && e.buttons & 1) {
+      const coords = engine.getCanvasCoordsFromClient(e.clientX, e.clientY);
+      const el = findElement(drag.target);
+      const ta = taRef.current;
+      if (coords && el && ta && coords.pageIndex === drag.target.pageIndex) {
+        const idx = indexAtPoint(el.style, el.text, coords.canvasX, coords.canvasY);
+        ta.setSelectionRange(Math.min(idx, drag.anchor), Math.max(idx, drag.anchor));
+        syncSelection();
+      }
+      return;
+    }
+    if (isChrome(e.target)) {
+      lastMoveRef.current = { x: -1, y: -1 };
+    } else {
+      lastMoveRef.current = { x: e.clientX, y: e.clientY };
+    }
+    if (!rafRef.current) rafRef.current = requestAnimationFrame(processHover);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !engine) return;
+    if (isChrome(e.target)) {
+      // 工具栏点击不夺走输入焦点（弹窗内的输入框除外）
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') e.preventDefault();
+      return;
+    }
+    e.preventDefault(); // 保持代理输入框焦点
+
+    const picked = pick(e.clientX, e.clientY);
+    let hit = picked?.hit ?? null;
+
+    // 离开空段落：清理后修正命中目标的下标
+    const prev = findElement(activeRef.current);
+    if (prev && (!hit || hit.id !== prev.id || hit.pageIndex !== prev.pageIndex)) {
+      const pruned = pruneEmptyActive();
+      if (pruned && hit && hit.pageIndex === pruned.pageIndex) {
+        const id =
+          hit.type === 'paragraph' && hit.paragraphIndex! > pruned.index
+            ? `paragraph-${hit.paragraphIndex! - 1}`
+            : hit.id;
+        hit = layoutOf(hit.pageIndex).find((el) => el.id === id) ?? null;
+      }
+    }
+
+    if (!hit || !picked) {
+      deactivate(false);
+      return;
+    }
+
+    const sameTarget =
+      activeRef.current?.id === hit.id && activeRef.current.pageIndex === hit.pageIndex;
+    const caret = indexAtPoint(hit.style, hit.text, picked.coords.canvasX, picked.coords.canvasY);
+    if (sameTarget && taRef.current) {
+      taRef.current.focus({ preventScroll: true });
+      taRef.current.setSelectionRange(caret, caret);
+      syncSelection();
+    } else {
+      activate(hit, caret);
+    }
+    dragRef.current = { target: { pageIndex: hit.pageIndex, id: hit.id }, anchor: caret };
+  };
+
+  const endDrag = () => {
+    dragRef.current = null;
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isChrome(e.target) || !activeRef.current) return;
+    taRef.current?.select();
+    syncSelection();
+  };
+
+  const handleMouseLeave = () => {
+    endDrag();
+    const h = hoverRef.current;
+    if (h) {
+      hoverRef.current = null;
+      paint(h.pageIndex);
+    }
+  };
+
+  // ---------- 键盘 / 输入 ----------
+  const handleInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const el = findElement(activeRef.current);
+    if (!el) return;
+    const ta = e.currentTarget;
+    const composing = (e.nativeEvent as InputEvent).isComposing;
+    let val = ta.value;
+    if (!composing) {
+      const cleaned = val.replace(/[\r\n]+/g, '');
+      const limited = el.maxLength ? cleaned.slice(0, el.maxLength) : cleaned;
+      if (limited !== val) {
+        val = limited;
+        ta.value = val;
+        ta.setSelectionRange(val.length, val.length);
+      }
+    }
+    selRef.current = { start: ta.selectionStart, end: ta.selectionEnd };
+    touchCaret();
+    // 先登记编辑状态（不绘制），再由内容提交一次性合成，避免双重渲染
+    engine?.updatePageEditState(el.pageIndex, editStateFor(el.pageIndex), { render: false });
+    commitPage(el.pageIndex, applyTextOverride(pagesRef.current[el.pageIndex], el.id, val));
+    updateProxyPos();
+  };
+
+  const stepElement = (el: PageLayoutElement, dir: -1 | 1, atEnd: boolean) => {
+    const list = layoutOf(el.pageIndex);
+    const i = list.findIndex((x) => x.id === el.id);
+    const next = list[i + dir];
+    if (next) activate(next, atEnd ? next.text.length : 0);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const el = findElement(activeRef.current);
+    if (!el) return;
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const ta = e.currentTarget;
+    const { selectionStart: s, selectionEnd: en } = ta;
+    const page = pagesRef.current[el.pageIndex];
+
     if (e.key === 'Escape') {
-      if (activeElement && engine) {
-        engine.updatePageEditState(activeElement.pageIndex, null);
-        setActiveElement(null);
+      e.preventDefault();
+      deactivate();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (el.type === 'paragraph' && el.paragraphIndex !== undefined) {
+        const lo = Math.min(s, en);
+        const hi = Math.max(s, en);
+        const text = ta.value.slice(0, lo) + ta.value.slice(hi);
+        const edited = applyTextOverride(page, el.id, text);
+        const r = splitParagraph(edited, el.paragraphIndex, lo);
+        if (r) applyEdit(el.pageIndex, r);
+      } else {
+        deactivate();
+      }
+    } else if (
+      e.key === 'Backspace' &&
+      s === 0 &&
+      en === 0 &&
+      el.type === 'paragraph' &&
+      el.paragraphIndex !== undefined
+    ) {
+      const r = mergeWithPrevious(page, el.paragraphIndex);
+      if (r) {
+        e.preventDefault();
+        applyEdit(el.pageIndex, r);
+      }
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      stepElement(el, e.shiftKey ? -1 : 1, false);
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !e.altKey && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      const dir = e.key === 'ArrowUp' ? -1 : 1;
+      const idx = moveCaretVertically(el.style, el.text, e.shiftKey ? en : s, dir);
+      if (idx !== null) {
+        if (e.shiftKey) ta.setSelectionRange(Math.min(s, idx), Math.max(s, idx));
+        else ta.setSelectionRange(idx, idx);
+      } else if (!e.shiftKey) {
+        stepElement(el, dir, dir < 0);
       }
     }
+    requestAnimationFrame(syncSelection);
   };
 
-  // 6. 快捷操作：新增段落
+  // ---------- 工具栏动作 ----------
   const handleAddParagraph = () => {
-    const pageIdx = activePageIndex;
-    const page = pages[pageIdx];
-    if (!page) return;
-
-    const copy = [...(page.paragraphs || [])];
-    const insertIdx = activeElement?.paragraphIndex !== undefined ? activeElement.paragraphIndex + 1 : copy.length;
-    copy.splice(insertIdx, 0, '在此键入新的一段文字……');
-
-    const updated = { ...page, paragraphs: copy };
-    onUpdatePage(pageIdx, updated);
-
-    // 重新聚焦新段落
-    setTimeout(() => {
-      if (engine) {
-        engine.updatePageContent(pageIdx, updated);
-        const elements = getPageLayoutElements(updated, pageIdx);
-        const newEl = elements.find((e) => e.id === `paragraph-${insertIdx}`);
-        if (newEl) {
-          setActiveElement(newEl);
-          setInputText(newEl.text);
-          engine.updatePageEditState(pageIdx, {
-            activeElementId: newEl.id,
-            activeTextOverride: newEl.text,
-            caretVisible: true,
-          });
-        }
-      }
-    }, 50);
+    if (!activePage || !supportsParagraphs(activePage)) return;
+    pruneEmptyActive();
+    const after = activeElement?.paragraphIndex ?? null;
+    applyEdit(activePageIndex, insertParagraph(pagesRef.current[activePageIndex], after));
   };
 
-  // 7. 快捷操作：删除当前段落
   const handleDeleteParagraph = () => {
     if (!activeElement || activeElement.paragraphIndex === undefined) return;
-    const pageIdx = activeElement.pageIndex;
-    const page = pages[pageIdx];
-    if (!page || !page.paragraphs || page.paragraphs.length <= 1) return;
-
-    const copy = page.paragraphs.filter((_, i) => i !== activeElement.paragraphIndex);
-    const updated = { ...page, paragraphs: copy };
-    onUpdatePage(pageIdx, updated);
-
-    if (engine) {
-      engine.updatePageContent(pageIdx, updated);
-      engine.updatePageEditState(pageIdx, null);
-    }
-    setActiveElement(null);
+    const idx = activeElement.paragraphIndex;
+    const page = pagesRef.current[activeElement.pageIndex];
+    commitPage(activeElement.pageIndex, removeParagraph(page, idx).page);
+    deactivate(false);
   };
 
-  // 8. 朱砂印章快速刻印切换
   const handleSelectSeal = (seal: string) => {
-    const pageIdx = activeElement ? activeElement.pageIndex : activePageIndex;
-    const page = pages[pageIdx];
-    if (!page) return;
-
-    const updated = { ...page, sealText: seal };
-    onUpdatePage(pageIdx, updated);
-
-    if (engine) {
-      engine.updatePageContent(pageIdx, updated);
-      if (activeElement && activeElement.type === 'seal') {
-        engine.updatePageEditState(pageIdx, {
-          activeElementId: activeElement.id,
-          activeTextOverride: seal,
-          caretVisible: true,
-        });
-      }
-    }
-    setInputText(seal);
+    const pageIdx = activePageIndex;
+    const page = pagesRef.current[pageIdx];
+    if (!page || !SEAL_PAGE_TYPES.includes(page.type)) return;
+    commitPage(pageIdx, { ...page, sealText: seal });
+    if (activeRef.current?.id === 'seal' && taRef.current) taRef.current.value = seal;
     setShowSealModal(false);
   };
 
-  // 9. 导出与导入 JSON
+  const handleReset = () => {
+    deactivate(false);
+    onResetPage(activePageIndex);
+  };
+
   const handleExportJson = () => {
     const dataStr = JSON.stringify(pages, null, 2);
-    navigator.clipboard?.writeText(dataStr);
+    navigator.clipboard?.writeText(dataStr).catch(() => {});
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `paper-mono-book-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleImportSubmit = () => {
     setImportError('');
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(importJsonText);
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        throw new Error('导入的内容必须是包含书籍页面对象的 JSON 数组');
-      }
-      onImportPages(parsed);
-      setShowImportModal(false);
-      setImportJsonText('');
-    } catch (err: unknown) {
-      setImportError(err instanceof Error ? err.message : 'JSON 格式解析失败');
+      parsed = JSON.parse(importJsonText);
+    } catch {
+      setImportError('JSON 格式解析失败');
+      return;
     }
+    const result = validateImportedPages(parsed, pages.length);
+    if (!result.ok) {
+      setImportError(result.error);
+      return;
+    }
+    deactivate(false);
+    onImportPages(result.pages);
+    setShowImportModal(false);
+    setImportJsonText('');
   };
+
+  const canAddParagraph = !!activePage && supportsParagraphs(activePage);
+  const canStamp = !!activePage && SEAL_PAGE_TYPES.includes(activePage.type);
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
 
   return (
     <div
-      onMouseMove={handleStageMouseMove}
-      onClick={handleStageClick}
+      ref={stageRef}
+      onMouseMove={handleMouseMove}
+      onMouseDown={handleMouseDown}
+      onMouseUp={endDrag}
+      onMouseLeave={handleMouseLeave}
+      onDoubleClick={handleDoubleClick}
       className="absolute inset-0 size-full pointer-events-auto z-40 select-none"
-      style={{
-        cursor: hoveredElementId
-          ? hoveredElementId === 'seal'
-            ? 'pointer'
-            : 'text'
-          : 'default',
-      }}
     >
-      {/* 1. 隐藏式中文 IME 代理输入框 (Invisible Keyboard Proxy with IME Support) */}
+      {/* 隐藏式 IME 代理输入框：位置跟随 3D 页面上的光标 */}
       <textarea
-        ref={proxyInputRef}
-        value={inputText}
-        onChange={handleProxyInputChange}
-        onCompositionStart={() => {
-          isComposingRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          isComposingRef.current = false;
-        }}
-        onKeyDown={handleProxyKeyDown}
+        ref={taRef}
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        onKeyUp={syncSelection}
+        onSelect={syncSelection}
         aria-label="3D Paper Native Editor IME Proxy"
         tabIndex={-1}
+        wrap="off"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
         style={{
           position: 'fixed',
-          top: `${proxyPos.y}px`,
-          left: `${proxyPos.x}px`,
+          top: 0,
+          left: 0,
           width: '1px',
           height: '1px',
           opacity: 0,
           pointerEvents: 'none',
-          zIndex: -10,
-          caretColor: 'transparent',
+          fontSize: '16px',
           resize: 'none',
           outline: 'none',
           border: 'none',
+          padding: 0,
         }}
       />
 
-      {/* 2. 悬浮顶部极简 3D 原生排印编辑胶囊 (Sleek Floating Toolbar) */}
-      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/95 backdrop-blur-md border border-[#E2DDD3] shadow-lg text-xs text-[#242220] whitespace-nowrap animate-in fade-in slide-in-from-top-2 font-serif pointer-events-auto">
+      {/* 悬浮工具栏 */}
+      <div
+        {...{ [CHROME_ATTR]: '' }}
+        onClick={stop}
+        className="absolute top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/95 backdrop-blur-md border border-[#E2DDD3] shadow-lg text-xs text-[#242220] whitespace-nowrap animate-in fade-in slide-in-from-top-2 font-serif pointer-events-auto"
+      >
         <div className="flex items-center gap-1.5 pr-2 border-r border-[#E2DDD3]">
           <span className="size-2 rounded-full bg-[#9B2D26] animate-pulse" />
           <span className="font-bold text-[#9B2D26]">原生 3D 排印</span>
-          <span className="text-[#242220]/60 hidden sm:inline">
-            · 无 HTML 盖层 · 墨入纸面
-          </span>
         </div>
 
-        {/* 翻页切换 */}
         <div className="flex items-center gap-1">
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (currentSheet > 0) onGoToSheet(currentSheet - 1);
-            }}
+            onClick={() => currentSheet > 0 && onGoToSheet(currentSheet - 1)}
             disabled={currentSheet <= 0}
             className="p-1 hover:bg-black/5 disabled:opacity-30 rounded transition-colors"
             title="前一印张"
@@ -483,13 +593,10 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
               ? '封面'
               : currentSheet === totalSheets
               ? '封底'
-              : `第 ${2 * currentSheet - 1}-${2 * currentSheet} 页`}
+              : `第 ${2 * currentSheet}-${2 * currentSheet + 1} 页`}
           </span>
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (currentSheet < totalSheets) onGoToSheet(currentSheet + 1);
-            }}
+            onClick={() => currentSheet < totalSheets && onGoToSheet(currentSheet + 1)}
             disabled={currentSheet >= totalSheets}
             className="p-1 hover:bg-black/5 disabled:opacity-30 rounded transition-colors"
             title="后一印张"
@@ -498,95 +605,77 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
           </button>
         </div>
 
-        {/* 当前编辑状态提示 */}
         <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#FAF8F5] border border-[#E2DDD3]/70 text-[11px] text-[#242220]/75">
           <Sparkles className="size-3 text-[#9B2D26]" />
           <span>
             {activeElement
-              ? `正在编辑：第 ${activeElement.pageIndex + 1} 页 · ${activeElement.label}`
-              : '点击 3D 页面任意文字即可直接打字修改'}
+              ? `正在编辑：第 ${activeElement.pageIndex + 1} 页 · ${activeElement.label}${
+                  activeElement.type === 'paragraph' ? ' · Enter 分段 / 行首退格并段' : ' · Enter 完成'
+                }`
+              : '点击页面文字直接编辑 · Tab 切换 · Esc 退出'}
           </span>
         </div>
 
-        {/* 针对正文段落的增删操作 */}
-        {activeElement?.paragraphIndex !== undefined && (
+        {(canAddParagraph || activeElement?.paragraphIndex !== undefined) && (
           <div className="flex items-center gap-1 pl-1 border-l border-[#E2DDD3]">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleAddParagraph();
-              }}
-              title="在当前段落后插入新段落"
-              className="px-2 py-0.5 rounded bg-black/5 hover:bg-black/10 flex items-center gap-1 text-[11px] font-medium transition-colors"
-            >
-              <Plus className="size-3 text-[#9B2D26]" />
-              <span>加段</span>
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDeleteParagraph();
-              }}
-              title="删除当前选中的段落"
-              className="p-1 text-red-700 hover:bg-red-50 rounded transition-colors"
-            >
-              <Trash2 className="size-3.5" />
-            </button>
+            {canAddParagraph && (
+              <button
+                onClick={handleAddParagraph}
+                title="在当前段落后插入新段落"
+                className="px-2 py-0.5 rounded bg-black/5 hover:bg-black/10 flex items-center gap-1 text-[11px] font-medium transition-colors"
+              >
+                <Plus className="size-3 text-[#9B2D26]" />
+                <span>加段</span>
+              </button>
+            )}
+            {activeElement?.paragraphIndex !== undefined && (
+              <button
+                onClick={handleDeleteParagraph}
+                title="删除当前选中的段落"
+                className="p-1 text-red-700 hover:bg-red-50 rounded transition-colors"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            )}
           </div>
         )}
 
-        {/* 朱砂印章刻印入口 */}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowSealModal((p) => !p);
-          }}
-          title="切换朱砂印章刻印文字"
-          className="p-1 rounded hover:bg-black/5 text-[#9B2D26] transition-colors"
+          onClick={() => canStamp && setShowSealModal((p) => !p)}
+          disabled={!canStamp}
+          title={canStamp ? '切换朱砂印章刻印文字' : '本页版式没有印章'}
+          className="p-1 rounded hover:bg-black/5 text-[#9B2D26] transition-colors disabled:opacity-30"
         >
           <Stamp className="size-3.5" />
         </button>
 
-        {/* 重置本页 */}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onResetPage(activePageIndex);
-          }}
+          onClick={handleReset}
           title="重置当前页为初始文本"
           className="p-1 rounded hover:bg-black/5 transition-colors"
         >
           <RotateCcw className="size-3.5" />
         </button>
 
-        {/* 导出 JSON */}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            handleExportJson();
-          }}
+          onClick={handleExportJson}
           title="导出整本杂志书籍数据 (JSON)"
           className="p-1 rounded hover:bg-black/5 transition-colors"
         >
           <Download className="size-3.5" />
         </button>
 
-        {/* 导入 JSON */}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowImportModal(true);
-          }}
+          onClick={() => setShowImportModal(true)}
           title="导入自定义杂志书籍数据 (JSON)"
           className="p-1 rounded hover:bg-black/5 transition-colors"
         >
           <Upload className="size-3.5" />
         </button>
 
-        {/* 完成退出编辑 */}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
+          onClick={() => {
+            pruneEmptyActive();
             onCloseEditMode();
           }}
           className="ml-1 px-3 py-1 rounded-full bg-[#9B2D26] hover:bg-[#85251F] text-white font-medium flex items-center gap-1 shadow-xs transition-colors"
@@ -596,10 +685,11 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
         </button>
       </div>
 
-      {/* 3. 朱砂印章快速刻印弹窗 (Stamp Selector Modal) */}
+      {/* 朱砂印章弹窗 */}
       {showSealModal && (
         <div
-          onClick={(e) => e.stopPropagation()}
+          {...{ [CHROME_ATTR]: '' }}
+          onClick={stop}
           className="absolute top-16 left-1/2 -translate-x-1/2 z-50 p-4 rounded-xl bg-white/95 backdrop-blur-md border border-[#E2DDD3] shadow-2xl w-[320px] animate-in fade-in zoom-in-95 font-serif"
         >
           <div className="flex items-center justify-between pb-2 mb-3 border-b border-[#E2DDD3]">
@@ -628,22 +718,24 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
             ))}
           </div>
 
-          <div className="text-xs text-[#242220]/70 mb-1">自定义刻印 (2或4字)：</div>
+          <div className="text-xs text-[#242220]/70 mb-1">自定义刻印 (2 或 4 字)：</div>
           <div className="flex gap-2">
             <input
               type="text"
               maxLength={4}
               value={customSealText}
               onChange={(e) => setCustomSealText(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && customSealText.trim()) {
+                  handleSelectSeal(customSealText.trim());
+                }
+              }}
               placeholder="如：澄怀观道"
               className="flex-1 px-2.5 py-1 text-sm border border-[#E2DDD3] rounded bg-white outline-none focus:ring-1 focus:ring-[#9B2D26]"
             />
             <button
-              onClick={() => {
-                if (customSealText.trim()) {
-                  handleSelectSeal(customSealText.trim());
-                }
-              }}
+              onClick={() => customSealText.trim() && handleSelectSeal(customSealText.trim())}
               className="px-3 py-1 bg-[#9B2D26] hover:bg-[#85251F] text-white text-xs font-bold rounded shadow-xs"
             >
               盖印
@@ -652,10 +744,11 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
         </div>
       )}
 
-      {/* 4. JSON 导入模态弹窗 (Import JSON Modal) */}
+      {/* JSON 导入弹窗 */}
       {showImportModal && (
         <div
-          onClick={(e) => e.stopPropagation()}
+          {...{ [CHROME_ATTR]: '' }}
+          onClick={stop}
           className="fixed inset-0 z-50 bg-black/45 backdrop-blur-xs flex items-center justify-center p-4"
         >
           <div className="bg-[#FAF8F5] border border-[#E2DDD3] rounded-2xl p-6 max-w-lg w-full shadow-2xl animate-in zoom-in-95 font-serif">
@@ -673,11 +766,12 @@ export const Native3DEditor: React.FC<Native3DEditorProps> = ({
             </div>
             <div className="py-4 space-y-3">
               <p className="text-xs text-[#242220]/70">
-                可粘贴此前导出的整书 JSON 配置。提交后 3D 页面将全量重绘更新。
+                可粘贴此前导出的整书 JSON（页数须与当前一致）。提交后 3D 页面将全量重绘。
               </p>
               <textarea
                 value={importJsonText}
                 onChange={(e) => setImportJsonText(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
                 placeholder="在此粘贴包含各页面对象的 JSON 数组..."
                 className="w-full h-48 p-3 text-xs font-mono bg-white border border-[#E2DDD3] rounded-lg outline-none focus:ring-1 focus:ring-[#9B2D26] resize-none"
               />

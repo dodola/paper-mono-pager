@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createBakedSheetGeometry } from './noiseBaker';
+import { createBakedSheetGeometry, SHEET_ASPECT } from './noiseBaker';
 import {
   SHEET_CONSTANTS,
   VERTEX_DECLARATIONS,
@@ -19,7 +19,8 @@ import type {
   AutoFlipState,
 } from './types';
 import { PageContent } from './chinesePublicationData';
-import { renderPageToCanvas, RenderOptions, PageEditState } from './pageRenderer';
+import { CANVAS_WIDTH, CANVAS_HEIGHT } from './pageLayout';
+import { renderPageBase, paintEditOverlay, RenderOptions, PageEditState } from './pageRenderer';
 
 export interface MagazineEngineOptions {
   container: HTMLElement;
@@ -53,7 +54,6 @@ export class MagazineEngine {
   private currentSheetIndex = 0; // A: 0..totalSheets
   private sheets: SheetData[] = [];
   private animations: ActiveAnimation[] = [];
-  private pageCanvases: HTMLCanvasElement[] = [];
   private pageTextures: THREE.CanvasTexture[] = [];
   private patternTexture: THREE.Texture | null = null;
   private placeholderTex: THREE.DataTexture;
@@ -61,6 +61,10 @@ export class MagazineEngine {
   // Native 3D Editor state
   private isEditMode = false;
   private pageEditStates: Record<number, PageEditState | null> = {};
+  /** 每页不含覆盖层的底图缓存，hover/光标闪烁只需合成覆盖层 */
+  private pageBases: (HTMLCanvasElement | undefined)[] = [];
+  /** 每页复用的纹理画布，避免每次交互重新分配 11MB 位图 */
+  private pageCanvases: (HTMLCanvasElement | undefined)[] = [];
 
   // Interaction & Physics state
   private lastActiveSheet = -1;
@@ -403,43 +407,69 @@ export class MagazineEngine {
     this.needsRender = true;
   }
 
+  /** 将页面画布提交为 CanvasTexture，并绑定到对应印张的正/背面材质 */
+  private applyPageCanvas(pageIndex: number, canvas: HTMLCanvasElement) {
+    let tex = this.pageTextures[pageIndex];
+    if (!tex) {
+      tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      this.pageTextures[pageIndex] = tex;
+      this.renderer.initTexture(tex);
+    } else {
+      tex.image = canvas;
+      tex.needsUpdate = true;
+    }
+
+    const sheet = this.sheets[pageIndex >> 1];
+    if (!sheet) return;
+    if (pageIndex % 2 === 0) {
+      sheet.frontTex = tex;
+      const material = sheet.mesh.material as THREE.MeshStandardMaterial;
+      if (material.map !== tex) {
+        material.map = tex;
+        material.needsUpdate = true;
+      }
+    } else {
+      sheet.sheetUniforms.uBackMap.value = tex;
+    }
+  }
+
+  /** 底图 + 当前编辑覆盖层 → 纹理；rebuildBase 为 true 时重新排版绘制底图 */
+  private composePage(pageIndex: number, rebuildBase: boolean) {
+    const page = this.pageContents[pageIndex];
+    if (!page) return;
+    let base = this.pageBases[pageIndex];
+    if (!base || rebuildBase) {
+      base = renderPageBase(page, this.renderOptions);
+      this.pageBases[pageIndex] = base;
+    }
+
+    let canvas = this.pageCanvases[pageIndex];
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = base.width;
+      canvas.height = base.height;
+      this.pageCanvases[pageIndex] = canvas;
+    }
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(base, 0, 0);
+
+    const editState = this.pageEditStates[pageIndex];
+    if (editState) {
+      paintEditOverlay(ctx, page, this.renderOptions, editState);
+    }
+    this.applyPageCanvas(pageIndex, canvas);
+    this.needsRender = true;
+  }
+
   public renderAllPageTextures(customOptions?: RenderOptions) {
     if (customOptions) {
       this.renderOptions = { ...this.renderOptions, ...customOptions };
     }
 
-    const anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-
-    this.pageContents.forEach((page, i) => {
-      const canvas = renderPageToCanvas(page, this.renderOptions);
-      this.pageCanvases[i] = canvas;
-
-      let tex = this.pageTextures[i];
-      if (!tex) {
-        tex = new THREE.CanvasTexture(canvas);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = anisotropy;
-        this.pageTextures[i] = tex;
-      } else {
-        tex.image = canvas;
-        tex.needsUpdate = true;
-      }
-
-      this.renderer.initTexture(tex);
-
-      const sheetIndex = i >> 1;
-      const isBack = i % 2 === 1;
-      const sheet = this.sheets[sheetIndex];
-      if (sheet) {
-        if (!isBack) {
-          sheet.frontTex = tex;
-          (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
-          (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
-        } else {
-          sheet.sheetUniforms.uBackMap.value = tex;
-        }
-      }
-
+    this.pageContents.forEach((_, i) => {
+      this.composePage(i, true);
       this.onProgress?.(i + 1, this.pageContents.length);
     });
 
@@ -453,51 +483,12 @@ export class MagazineEngine {
   public updatePageContent(pageIndex: number, newContent: PageContent) {
     if (pageIndex < 0 || pageIndex >= this.pageContents.length) return;
     this.pageContents[pageIndex] = newContent;
-
-    const canvas = renderPageToCanvas(newContent, this.renderOptions);
-    this.pageCanvases[pageIndex] = canvas;
-
-    let tex = this.pageTextures[pageIndex];
-    const anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-    if (!tex) {
-      tex = new THREE.CanvasTexture(canvas);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = anisotropy;
-      this.pageTextures[pageIndex] = tex;
-    } else {
-      tex.image = canvas;
-      tex.needsUpdate = true;
-    }
-
-    this.renderer.initTexture(tex);
-
-    const sheetIndex = pageIndex >> 1;
-    const isBack = pageIndex % 2 === 1;
-    const sheet = this.sheets[sheetIndex];
-    if (sheet) {
-      if (!isBack) {
-        sheet.frontTex = tex;
-        (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
-        (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
-      } else {
-        sheet.sheetUniforms.uBackMap.value = tex;
-      }
-    }
-
-    this.needsRender = true;
+    this.composePage(pageIndex, true);
   }
 
   public setAllPageContents(newContents: PageContent[]) {
     this.pageContents = [...newContents];
     this.renderAllPageTextures();
-  }
-
-  public getPageContents(): PageContent[] {
-    return [...this.pageContents];
-  }
-
-  public getCurrentRenderOptions(): RenderOptions {
-    return { ...this.renderOptions };
   }
 
   public setEditMode(enabled: boolean) {
@@ -513,19 +504,13 @@ export class MagazineEngine {
       if (this.hitArea) {
         this.hitArea.style.cursor = 'pointer';
       }
-      this.clearAllEditStates();
     }
     this.needsRender = true;
   }
 
-  public getIsEditMode(): boolean {
-    return this.isEditMode;
-  }
-
   public clearAllEditStates() {
     for (const key of Object.keys(this.pageEditStates)) {
-      const idx = Number(key);
-      this.updatePageEditState(idx, null);
+      if (this.pageEditStates[Number(key)]) this.updatePageEditState(Number(key), null);
     }
     this.pageEditStates = {};
   }
@@ -553,6 +538,7 @@ export class MagazineEngine {
     canvasX: number;
     canvasY: number;
   } | null {
+    if (this.isFlipping()) return null;
     const rect = this.canvas.getBoundingClientRect();
     if (
       clientX < rect.left ||
@@ -576,18 +562,18 @@ export class MagazineEngine {
     const px = this.intersectPoint.x;
     const py = this.intersectPoint.y;
 
-    // 书页在 3D 世界半高度：1.377 / 2 = 0.6885
-    const halfH = 1.377 / 2;
+    // 书页在 3D 世界半高度
+    const halfH = SHEET_ASPECT / 2;
     if (py < -halfH || py > halfH) {
       return null;
     }
 
-    const canvasY = ((halfH - py) / 1.377) * 1983;
+    const canvasY = ((halfH - py) / SHEET_ASPECT) * CANVAS_HEIGHT;
 
     if (px >= 0 && px <= 1.0) {
       const pageIndex = this.getRightPageIndex();
       if (pageIndex === null) return null;
-      const canvasX = px * 1440;
+      const canvasX = px * CANVAS_WIDTH;
       return {
         pageIndex,
         side: 'right',
@@ -597,7 +583,7 @@ export class MagazineEngine {
     } else if (px >= -1.0 && px < 0) {
       const pageIndex = this.getLeftPageIndex();
       if (pageIndex === null) return null;
-      const canvasX = (1.0 + px) * 1440;
+      const canvasX = (1.0 + px) * CANVAS_WIDTH;
       return {
         pageIndex,
         side: 'left',
@@ -616,42 +602,37 @@ export class MagazineEngine {
    */
   public updatePageEditState(
     pageIndex: number,
-    editState: PageEditState | null
+    editState: PageEditState | null,
+    options: { render?: boolean } = {}
   ) {
     if (pageIndex < 0 || pageIndex >= this.pageContents.length) return;
     this.pageEditStates[pageIndex] = editState;
-    const page = this.pageContents[pageIndex];
-    const canvas = renderPageToCanvas(page, this.renderOptions, editState || undefined);
-    this.pageCanvases[pageIndex] = canvas;
+    // render:false 时只记录状态，由紧随其后的 updatePageContent 一次性绘制
+    if (options.render !== false) this.composePage(pageIndex, false);
+  }
 
-    let tex = this.pageTextures[pageIndex];
-    const anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-    if (!tex) {
-      tex = new THREE.CanvasTexture(canvas);
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = anisotropy;
-      this.pageTextures[pageIndex] = tex;
-    } else {
-      tex.image = canvas;
-      tex.needsUpdate = true;
-    }
+  /** 画布纹理坐标 → 浏览器视口坐标（用于把 IME 候选窗定位到光标处） */
+  public getClientCoordsFromCanvas(
+    pageIndex: number,
+    canvasX: number,
+    canvasY: number
+  ): { x: number; y: number } | null {
+    let px: number;
+    if (pageIndex === this.getRightPageIndex()) px = canvasX / CANVAS_WIDTH;
+    else if (pageIndex === this.getLeftPageIndex()) px = canvasX / CANVAS_WIDTH - 1;
+    else return null;
+    const py = SHEET_ASPECT / 2 - (canvasY / CANVAS_HEIGHT) * SHEET_ASPECT;
+    const v = new THREE.Vector3(px, py, 0).project(this.camera);
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: rect.left + ((v.x + 1) / 2) * rect.width,
+      y: rect.top + ((1 - v.y) / 2) * rect.height,
+    };
+  }
 
-    this.renderer.initTexture(tex);
-
-    const sheetIndex = pageIndex >> 1;
-    const isBack = pageIndex % 2 === 1;
-    const sheet = this.sheets[sheetIndex];
-    if (sheet) {
-      if (!isBack) {
-        sheet.frontTex = tex;
-        (sheet.mesh.material as THREE.MeshStandardMaterial).map = tex;
-        (sheet.mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
-      } else {
-        sheet.sheetUniforms.uBackMap.value = tex;
-      }
-    }
-
-    this.needsRender = true;
+  /** 翻页动画或拖拽进行中，纹理坐标与屏幕不再对应 */
+  public isFlipping(): boolean {
+    return this.animations.length > 0 || this.dragState !== null;
   }
 
   private cornerRollMax(deg: number): number {
@@ -1201,7 +1182,7 @@ export class MagazineEngine {
       for (let i = 0; i < this.sheets.length; i++) {
         const sheet = this.sheets[i];
         const distFromCurrent = i >= this.currentSheetIndex ? i - this.currentSheetIndex : this.currentSheetIndex - 1 - i;
-        const shouldShadow = distFromCurrent < 3 || this.isSheetAnimating(i) || (this.dragState && this.dragState.sheetIndex === i);
+        const shouldShadow = distFromCurrent < 3 || this.isSheetAnimating(i) || (this.dragState !== null && this.dragState.sheetIndex === i);
         if (sheet.mesh.castShadow !== shouldShadow) {
           sheet.mesh.castShadow = shouldShadow;
         }

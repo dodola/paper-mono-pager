@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
-import { CHINESE_PAGES, getAllBookText } from './magazine/chinesePublicationData';
+import { CHINESE_PAGES, getAllBookText, PageContent } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
 import { Native3DEditor } from './magazine/Native3DEditor';
 import {
@@ -54,7 +54,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   };
 
   const [pages, setPages] = useState<PageContent[]>(() =>
-    JSON.parse(JSON.stringify(CHINESE_PAGES))
+    structuredClone(CHINESE_PAGES)
   );
   const [activeEditPageIndex, setActiveEditPageIndex] = useState(0);
 
@@ -156,17 +156,11 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
 
   const handleResetPage = useCallback(
     (index: number) => {
-      const original = JSON.parse(JSON.stringify(CHINESE_PAGES[index]));
+      const original = structuredClone(CHINESE_PAGES[index]);
       handleUpdatePage(index, original);
     },
     [handleUpdatePage]
   );
-
-  const handleResetAll = useCallback(() => {
-    const original = JSON.parse(JSON.stringify(CHINESE_PAGES));
-    setPages(original);
-    engineRef.current?.setAllPageContents(original);
-  }, []);
 
   const handleImportPages = useCallback((newPages: PageContent[]) => {
     setPages(newPages);
@@ -294,8 +288,6 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
           {isEditMode && (
             <Native3DEditor
               engine={engineRef.current}
-              stageWidth={stageSize.width}
-              stageHeight={stageSize.height}
               currentSheet={currentSheet}
               totalSheets={totalSheets}
               leftPageNum={leftPage}
@@ -303,7 +295,6 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
               pages={pages}
               onUpdatePage={handleUpdatePage}
               onResetPage={handleResetPage}
-              onResetAll={handleResetAll}
               onGoToSheet={(idx) => engineRef.current?.goToSheet(idx)}
               onCloseEditMode={toggleEditMode}
               onImportPages={handleImportPages}

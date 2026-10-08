@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const SHEET_ASPECT = 1.377;
+export const SHEET_ASPECT = 1.377;
 const NORMAL_EPSILON = 0.03;
 const DEFORM_SCALE = 1.2;
 const DEFORM_SEED = 46.0;

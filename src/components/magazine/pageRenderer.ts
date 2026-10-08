@@ -1,13 +1,6 @@
-import * as THREE from 'three';
 import { PageContent } from './chinesePublicationData';
-import { PageLayoutElement, getPageLayoutElements } from './pageLayout';
-
-const CANVAS_WIDTH = 1440;
-const CANVAS_HEIGHT = 1983; // 1440 * 1.37708
-
-const WENKAI_FONT = '"LXGW WenKai", "LXGW WenKai Mono", "KaiTi", "STKaiti", "Noto Serif SC", "Songti SC", "STSong", serif';
-const SERIF_FONT = WENKAI_FONT;
-const KAI_FONT = WENKAI_FONT;
+import { CANVAS_WIDTH, CANVAS_HEIGHT, getCachedLayoutElements } from './pageLayout';
+import { WENKAI_FONT, hasText, wrapText, caretGeometry, selectionRects } from './textMetrics';
 
 export interface RenderOptions {
   paperColor?: string;
@@ -18,8 +11,10 @@ export interface RenderOptions {
 export interface PageEditState {
   hoveredElementId?: string | null;
   activeElementId?: string | null;
-  activeTextOverride?: string;
   caretVisible?: boolean;
+  /** 激活元素内的选区（字符下标），相等表示插入点 */
+  selectionStart?: number;
+  selectionEnd?: number;
 }
 
 const DEFAULT_OPTIONS: Required<RenderOptions> = {
@@ -43,7 +38,7 @@ function drawSeal(
   ctx.strokeRect(x - size / 2, y - size / 2, size, size);
 
   ctx.fillStyle = color;
-  ctx.font = `bold ${Math.round(size * 0.38)}px ${SERIF_FONT}`;
+  ctx.font = `bold ${Math.round(size * 0.38)}px ${WENKAI_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -61,45 +56,13 @@ function drawSeal(
   ctx.restore();
 }
 
-// 中文避头尾折行算法
-function wrapChineseText(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number
-): string[] {
-  const lines: string[] = [];
-  const noStartPunct = '，。！？；：）》”、’』】';
-  const noEndPunct = '（《“‘『【';
-
-  let currentLine = '';
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const testLine = currentLine + char;
-    const testWidth = ctx.measureText(testLine).width;
-
-    if (testWidth > maxWidth && currentLine.length > 0) {
-      // 检查当前字符是否不能放在行首
-      if (noStartPunct.includes(char)) {
-        // 将上一行的最后一个字符拉到本行或者强行塞入
-        currentLine += char;
-        lines.push(currentLine);
-        currentLine = '';
-        continue;
-      }
-      lines.push(currentLine);
-      currentLine = char;
-    } else {
-      currentLine = testLine;
-    }
-  }
-  if (currentLine.length > 0) {
-    lines.push(currentLine);
-  }
-  return lines;
+// 中文避头尾折行（与版式计算共用 wrapText）
+function wrapChineseText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  return wrapText((t) => ctx.measureText(t).width, text, maxWidth);
 }
 
 // 辅助函数：将正在编辑的文本临时替换到页面数据中以实现即时渲染
-function applyTextOverride(
+export function applyTextOverride(
   page: PageContent,
   activeElementId: string,
   text: string
@@ -232,7 +195,7 @@ function drawActiveBox(
   ctx.lineTo(x + width, y + height - len);
   ctx.stroke();
 
-  ctx.font = `bold 16px ${SERIF_FONT}`;
+  ctx.font = `bold 16px ${WENKAI_FONT}`;
   ctx.fillStyle = accentColor;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
@@ -240,100 +203,62 @@ function drawActiveBox(
   ctx.restore();
 }
 
-// 绘制原生打字光标 |
-function drawCaretAtElement(
-  ctx: CanvasRenderingContext2D,
-  el: PageLayoutElement,
-  text: string,
-  accentColor = '#9B2D26'
-) {
-  ctx.save();
-  ctx.strokeStyle = accentColor;
-  ctx.lineWidth = 3.5;
-  ctx.lineCap = 'round';
-
-  let cx = el.bounds.x + 8;
-  let cy = el.bounds.y + 12;
-  let ch = Math.min(42, el.bounds.height - 16);
-
-  if (el.type === 'title') {
-    ctx.font = `bold 48px ${SERIF_FONT}`;
-    const tw = ctx.measureText(text).width;
-    if (el.bounds.width > 600) {
-      cx = el.bounds.x + el.bounds.width / 2 + tw / 2 + 6;
-      cy = el.bounds.y + 16;
-      ch = 48;
-    } else {
-      cx = el.bounds.x + tw + 10;
-      cy = el.bounds.y + 14;
-      ch = 44;
-    }
-  } else if (el.type === 'paragraph') {
-    ctx.font = `400 31px ${SERIF_FONT}`;
-    const lines = wrapChineseText(ctx, '　　' + text, el.bounds.width - 20);
-    const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
-    const tw = ctx.measureText(lastLine).width;
-    cx = el.bounds.x + 15 + tw + 6;
-    cy = el.bounds.y + 15 + Math.max(0, lines.length - 1) * 60;
-    ch = 36;
-  } else {
-    ctx.font = `400 28px ${SERIF_FONT}`;
-    const tw = ctx.measureText(text).width;
-    cx = el.bounds.x + 10 + tw + 6;
-    cy = el.bounds.y + 10;
-    ch = Math.min(36, el.bounds.height - 12);
-  }
-
-  cx = Math.min(cx, el.bounds.x + el.bounds.width - 6);
-
-  ctx.beginPath();
-  ctx.moveTo(cx, cy);
-  ctx.lineTo(cx, cy + ch);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function applyEditOverlay(
+// 绘制原生打字光标 | 与选区高亮：几何完全来自版式样式，保证与文字对位
+export function paintEditOverlay(
   ctx: CanvasRenderingContext2D,
   page: PageContent,
-  options: Required<RenderOptions>,
-  editState?: PageEditState
+  customOptions: RenderOptions,
+  editState: PageEditState
 ) {
-  if (!editState) return;
-  const pageIndex = Math.max(0, page.sideIndex - 1);
-  const elements = getPageLayoutElements(page, pageIndex);
+  const options = { ...DEFAULT_OPTIONS, ...customOptions };
+  const elements = getCachedLayoutElements(page, Math.max(0, page.sideIndex - 1));
 
-  // 1. 悬停元素绘制角标
   if (editState.hoveredElementId && editState.hoveredElementId !== editState.activeElementId) {
     const el = elements.find((e) => e.id === editState.hoveredElementId);
-    if (el) {
-      drawCropMarks(ctx, el.bounds, options.accentColor);
-    }
+    if (el) drawCropMarks(ctx, el.bounds, options.accentColor);
   }
 
-  // 2. 激活元素绘制选框与原生光标
-  if (editState.activeElementId) {
-    const el = elements.find((e) => e.id === editState.activeElementId);
-    if (el) {
-      drawActiveBox(ctx, el.bounds, options.accentColor);
-      if (editState.caretVisible) {
-        const text = editState.activeTextOverride !== undefined ? editState.activeTextOverride : el.text;
-        drawCaretAtElement(ctx, el, text, options.accentColor);
-      }
+  if (!editState.activeElementId) return;
+  const el = elements.find((e) => e.id === editState.activeElementId);
+  if (!el) return;
+  drawActiveBox(ctx, el.bounds, options.accentColor);
+  if (el.type === 'seal') return;
+
+  const start = editState.selectionStart ?? el.text.length;
+  const end = editState.selectionEnd ?? start;
+
+  if (start !== end) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(155, 45, 38, 0.22)';
+    for (const r of selectionRects(el.style, el.text, start, end)) {
+      ctx.fillRect(r.x, r.y, r.width, r.height);
     }
+    ctx.restore();
+  } else if (editState.caretVisible) {
+    const g = caretGeometry(el.style, el.text, start);
+    ctx.save();
+    ctx.strokeStyle = options.accentColor;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (g.horizontal) {
+      ctx.moveTo(g.x - g.height / 2, g.top);
+      ctx.lineTo(g.x + g.height / 2, g.top);
+    } else {
+      ctx.moveTo(g.x, g.top);
+      ctx.lineTo(g.x, g.top + g.height);
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
-export function renderPageToCanvas(
-  rawPage: PageContent,
-  customOptions?: RenderOptions,
-  editState?: PageEditState
+/** 纸面底图（不含编辑覆盖层）；纸纹噪点按页确定性生成，重绘不闪烁 */
+export function renderPageBase(
+  page: PageContent,
+  customOptions?: RenderOptions
 ): HTMLCanvasElement {
   const options = { ...DEFAULT_OPTIONS, ...customOptions };
-  const page = editState?.activeElementId && editState.activeTextOverride !== undefined
-    ? applyTextOverride(rawPage, editState.activeElementId, editState.activeTextOverride)
-    : rawPage;
-
   const canvas = document.createElement('canvas');
   canvas.width = CANVAS_WIDTH;
   canvas.height = CANVAS_HEIGHT;
@@ -345,10 +270,18 @@ export function renderPageToCanvas(
 
   // 极微弱的纸张噪点纤维底纹
   ctx.fillStyle = 'rgba(0, 0, 0, 0.012)';
+  let seed = (page.sideIndex * 2654435761) >>> 0;
+  const rand = () => {
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
   for (let i = 0; i < 400; i++) {
-    const rx = Math.random() * CANVAS_WIDTH;
-    const ry = Math.random() * CANVAS_HEIGHT;
-    const rw = Math.random() * 2 + 1;
+    const rx = rand() * CANVAS_WIDTH;
+    const ry = rand() * CANVAS_HEIGHT;
+    const rw = rand() * 2 + 1;
     ctx.fillRect(rx, ry, rw, rw);
   }
 
@@ -363,14 +296,12 @@ export function renderPageToCanvas(
   // 2. 封面特别渲染
   if (page.type === 'cover') {
     renderCover(ctx, page, options);
-    applyEditOverlay(ctx, page, options, editState);
     return canvas;
   }
 
   // 3. 封底版权页特别渲染
   if (page.type === 'colophon') {
     renderColophon(ctx, page, options);
-    applyEditOverlay(ctx, page, options, editState);
     return canvas;
   }
 
@@ -383,10 +314,10 @@ export function renderPageToCanvas(
   ctx.lineTo(contentRight, 140);
   ctx.stroke();
 
-  ctx.font = `400 24px ${SERIF_FONT}`;
+  ctx.font = `400 24px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.6)';
   ctx.textBaseline = 'bottom';
-  if (page.headerText) {
+  if (hasText(page.headerText)) {
     if (isLeftPage) {
       ctx.textAlign = 'left';
       ctx.fillText(page.headerText, contentLeft, 130);
@@ -399,7 +330,7 @@ export function renderPageToCanvas(
 
   // 5. 页码（Folio）
   ctx.save();
-  ctx.font = `500 24px ${SERIF_FONT}`;
+  ctx.font = `500 24px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.5)';
   ctx.textBaseline = 'top';
   const pageNumStr = `— ${page.sideIndex.toString().padStart(2, '0')} —`;
@@ -419,20 +350,20 @@ export function renderPageToCanvas(
     // 扉页
     startY = 420;
     ctx.fillStyle = options.textColor;
-    ctx.font = `bold 54px ${SERIF_FONT}`;
+    ctx.font = `bold 54px ${WENKAI_FONT}`;
     ctx.textAlign = 'center';
     ctx.fillText(page.title, CANVAS_WIDTH / 2, startY);
 
-    if (page.subtitle) {
+    if (hasText(page.subtitle)) {
       startY += 70;
-      ctx.font = `400 28px ${KAI_FONT}`;
+      ctx.font = `400 28px ${WENKAI_FONT}`;
       ctx.fillStyle = 'rgba(36, 34, 32, 0.65)';
       ctx.fillText(page.subtitle, CANVAS_WIDTH / 2, startY);
     }
 
     startY += 120;
     ctx.fillStyle = options.textColor;
-    ctx.font = `400 32px ${KAI_FONT}`;
+    ctx.font = `400 32px ${WENKAI_FONT}`;
     ctx.textAlign = 'left';
 
     const pWidth = 840;
@@ -448,20 +379,20 @@ export function renderPageToCanvas(
       }
     }
 
-    if (page.sealText) {
+    if (hasText(page.sealText)) {
       drawSeal(ctx, page.sealText, CANVAS_WIDTH / 2, startY + 60, 68, options.accentColor);
     }
   } else if (page.type === 'toc') {
     // 目录
     startY = 240;
     ctx.fillStyle = options.textColor;
-    ctx.font = `bold 56px ${SERIF_FONT}`;
+    ctx.font = `bold 56px ${WENKAI_FONT}`;
     ctx.textAlign = 'center';
     ctx.fillText(page.title, CANVAS_WIDTH / 2, startY);
 
-    if (page.subtitle) {
+    if (hasText(page.subtitle)) {
       startY += 50;
-      ctx.font = `500 22px ${SERIF_FONT}`;
+      ctx.font = `500 22px ${WENKAI_FONT}`;
       ctx.fillStyle = 'rgba(36, 34, 32, 0.5)';
       ctx.fillText(page.subtitle, CANVAS_WIDTH / 2, startY);
     }
@@ -478,24 +409,24 @@ export function renderPageToCanvas(
     startY += 80;
     if (page.tocItems) {
       for (const item of page.tocItems) {
-        ctx.font = `500 32px ${SERIF_FONT}`;
+        ctx.font = `500 32px ${WENKAI_FONT}`;
         ctx.fillStyle = options.textColor;
         ctx.textAlign = 'left';
         ctx.fillText(item.title, contentLeft, startY);
 
-        ctx.font = `400 24px ${KAI_FONT}`;
+        ctx.font = `400 24px ${WENKAI_FONT}`;
         ctx.fillStyle = 'rgba(36, 34, 32, 0.6)';
         const authorX = contentLeft + 480;
         ctx.fillText(item.author, authorX, startY);
 
-        ctx.font = `bold 28px ${SERIF_FONT}`;
+        ctx.font = `bold 28px ${WENKAI_FONT}`;
         ctx.fillStyle = options.textColor;
         ctx.textAlign = 'right';
         ctx.fillText(item.page, contentRight, startY);
 
         // 点划引导线
         ctx.fillStyle = 'rgba(36, 34, 32, 0.25)';
-        ctx.font = `400 24px ${SERIF_FONT}`;
+        ctx.font = `400 24px ${WENKAI_FONT}`;
         ctx.textAlign = 'left';
         const dotsLeft = authorX + 160;
         const dotsRight = contentRight - 60;
@@ -511,29 +442,29 @@ export function renderPageToCanvas(
   } else if (page.type === 'chapter') {
     // 章节扉页
     startY = 480;
-    if (page.chapterNumber) {
-      ctx.font = `bold 32px ${SERIF_FONT}`;
+    if (hasText(page.chapterNumber)) {
+      ctx.font = `bold 32px ${WENKAI_FONT}`;
       ctx.fillStyle = options.accentColor;
       ctx.textAlign = 'center';
       ctx.fillText(page.chapterNumber, CANVAS_WIDTH / 2, startY);
       startY += 60;
     }
 
-    ctx.font = `bold 64px ${SERIF_FONT}`;
+    ctx.font = `bold 64px ${WENKAI_FONT}`;
     ctx.fillStyle = options.textColor;
     ctx.textAlign = 'center';
     ctx.fillText(page.title, CANVAS_WIDTH / 2, startY);
 
-    if (page.subtitle) {
+    if (hasText(page.subtitle)) {
       startY += 64;
-      ctx.font = `400 28px ${KAI_FONT}`;
+      ctx.font = `400 28px ${WENKAI_FONT}`;
       ctx.fillStyle = 'rgba(36, 34, 32, 0.6)';
       ctx.fillText(page.subtitle, CANVAS_WIDTH / 2, startY);
     }
 
-    if (page.author) {
+    if (hasText(page.author)) {
       startY += 54;
-      ctx.font = `500 30px ${SERIF_FONT}`;
+      ctx.font = `500 30px ${WENKAI_FONT}`;
       ctx.fillStyle = options.textColor;
       ctx.fillText(page.author, CANVAS_WIDTH / 2, startY);
     }
@@ -541,7 +472,7 @@ export function renderPageToCanvas(
     startY += 120;
     const descWidth = 780;
     const descLeft = (CANVAS_WIDTH - descWidth) / 2;
-    ctx.font = `400 30px ${KAI_FONT}`;
+    ctx.font = `400 30px ${WENKAI_FONT}`;
     ctx.fillStyle = 'rgba(36, 34, 32, 0.8)';
     ctx.textAlign = 'left';
     if (page.paragraphs) {
@@ -554,33 +485,33 @@ export function renderPageToCanvas(
       }
     }
 
-    if (page.sealText) {
+    if (hasText(page.sealText)) {
       drawSeal(ctx, page.sealText, CANVAS_WIDTH / 2, startY + 80, 72, options.accentColor);
     }
   } else if (page.type === 'poetry') {
     // 诗歌排版（优美居中呼吸感）
     startY = 260;
-    ctx.font = `bold 48px ${SERIF_FONT}`;
+    ctx.font = `bold 48px ${WENKAI_FONT}`;
     ctx.fillStyle = options.textColor;
     ctx.textAlign = 'center';
     ctx.fillText(page.title, CANVAS_WIDTH / 2, startY);
 
-    if (page.subtitle) {
+    if (hasText(page.subtitle)) {
       startY += 48;
-      ctx.font = `400 26px ${KAI_FONT}`;
+      ctx.font = `400 26px ${WENKAI_FONT}`;
       ctx.fillStyle = 'rgba(36, 34, 32, 0.6)';
       ctx.fillText(page.subtitle, CANVAS_WIDTH / 2, startY);
     }
 
-    if (page.author) {
+    if (hasText(page.author)) {
       startY += 46;
-      ctx.font = `400 28px ${SERIF_FONT}`;
+      ctx.font = `400 28px ${WENKAI_FONT}`;
       ctx.fillStyle = options.textColor;
       ctx.fillText(page.author, CANVAS_WIDTH / 2, startY);
     }
 
     startY += 80;
-    ctx.font = `400 32px ${SERIF_FONT}`;
+    ctx.font = `400 32px ${WENKAI_FONT}`;
     ctx.fillStyle = options.textColor;
     ctx.textAlign = 'center';
 
@@ -597,8 +528,8 @@ export function renderPageToCanvas(
   } else {
     // 标准图书正文散文页（经典出版物排法）
     startY = 220;
-    if (page.title) {
-      ctx.font = `bold 40px ${SERIF_FONT}`;
+    if (hasText(page.title)) {
+      ctx.font = `bold 40px ${WENKAI_FONT}`;
       ctx.fillStyle = options.textColor;
       ctx.textAlign = 'left';
       ctx.fillText(page.title, contentLeft, startY);
@@ -606,7 +537,7 @@ export function renderPageToCanvas(
     }
 
     // 正文
-    ctx.font = `400 31px ${SERIF_FONT}`;
+    ctx.font = `400 31px ${WENKAI_FONT}`;
     ctx.fillStyle = options.textColor;
     ctx.textAlign = 'left';
 
@@ -632,7 +563,7 @@ export function renderPageToCanvas(
       ctx.lineTo(contentLeft + 240, noteY);
       ctx.stroke();
 
-      ctx.font = `400 24px ${KAI_FONT}`;
+      ctx.font = `400 24px ${WENKAI_FONT}`;
       ctx.fillStyle = 'rgba(36, 34, 32, 0.65)';
       let ny = noteY + 36;
       for (const n of page.notes) {
@@ -642,7 +573,18 @@ export function renderPageToCanvas(
     }
   }
 
-  applyEditOverlay(ctx, page, options, editState);
+  return canvas;
+}
+
+export function renderPageToCanvas(
+  page: PageContent,
+  customOptions?: RenderOptions,
+  editState?: PageEditState
+): HTMLCanvasElement {
+  const canvas = renderPageBase(page, customOptions);
+  if (editState) {
+    paintEditOverlay(canvas.getContext('2d')!, page, customOptions ?? {}, editState);
+  }
   return canvas;
 }
 
@@ -683,11 +625,11 @@ function renderCover(
 
   // 竖排大字书名
   ctx.fillStyle = '#1D1A18';
-  ctx.font = `bold 68px ${SERIF_FONT}`;
+  ctx.font = `bold 68px ${WENKAI_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
 
-  const titleChars = page.title.split('');
+  const titleChars = (page.title || '').split('').slice(0, 8);
   let ty = labelY + 60;
   for (const ch of titleChars) {
     ctx.fillText(ch, labelX + labelW / 2, ty);
@@ -695,24 +637,24 @@ function renderCover(
   }
 
   // 题签下方作者
-  ctx.font = `500 26px ${KAI_FONT}`;
+  ctx.font = `500 26px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.7)';
   ctx.fillText('文心选本', labelX + labelW / 2, labelY + labelH - 80);
 
   // 封面副标题（横排于左侧）
   ctx.textAlign = 'left';
-  ctx.font = `500 34px ${SERIF_FONT}`;
+  ctx.font = `500 34px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.85)';
   const subX = 220;
   let subY = 680;
-  if (page.subtitle) {
+  if (hasText(page.subtitle)) {
     ctx.fillText(page.subtitle, subX, subY);
     subY += 60;
   }
 
-  ctx.font = `400 28px ${KAI_FONT}`;
+  ctx.font = `400 28px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.6)';
-  if (page.author) {
+  if (hasText(page.author)) {
     ctx.fillText(page.author, subX, subY);
   }
 
@@ -720,7 +662,7 @@ function renderCover(
   drawSeal(ctx, page.sealText || '文心典藏', subX + 46, subY + 120, 84, options.accentColor);
 
   // 底部出版社
-  ctx.font = `bold 28px ${SERIF_FONT}`;
+  ctx.font = `bold 28px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.7)';
   ctx.textAlign = 'center';
   ctx.fillText('文 心 出 版 局', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 160);
@@ -742,10 +684,10 @@ function renderColophon(
   ctx.strokeRect(boxX, boxY, boxW, boxH);
 
   // 标题
-  ctx.font = `bold 42px ${SERIF_FONT}`;
+  ctx.font = `bold 42px ${WENKAI_FONT}`;
   ctx.fillStyle = options.textColor;
   ctx.textAlign = 'center';
-  ctx.fillText('图书在版编目（ＣＩＰ）数据', CANVAS_WIDTH / 2, boxY + 80);
+  ctx.fillText(page.title || '图书在版编目（ＣＩＰ）数据', CANVAS_WIDTH / 2, boxY + 80);
 
   ctx.strokeStyle = 'rgba(36, 34, 32, 0.2)';
   ctx.lineWidth = 1;
@@ -755,7 +697,7 @@ function renderColophon(
   ctx.stroke();
 
   let cy = boxY + 190;
-  ctx.font = `400 28px ${SERIF_FONT}`;
+  ctx.font = `400 28px ${WENKAI_FONT}`;
   ctx.textAlign = 'left';
 
   if (page.colophonDetails) {
@@ -772,7 +714,7 @@ function renderColophon(
   // 底部出版印章与条形码意象
   drawSeal(ctx, page.sealText || '文心出版', CANVAS_WIDTH / 2, boxY + boxH - 120, 72, options.accentColor);
 
-  ctx.font = `400 22px ${SERIF_FONT}`;
+  ctx.font = `400 22px ${WENKAI_FONT}`;
   ctx.fillStyle = 'rgba(36, 34, 32, 0.4)';
   ctx.textAlign = 'center';
   ctx.fillText('ISBN 978-7-5000-0000-0 · 定价：48.00元', CANVAS_WIDTH / 2, CANVAS_HEIGHT - 160);
@@ -781,15 +723,3 @@ function renderColophon(
 /**
  * 将整本书的所有页面渲染为 Three.js CanvasTexture 数组
  */
-export function createBookTextures(
-  pages: PageContent[],
-  options?: RenderOptions
-): THREE.CanvasTexture[] {
-  return pages.map((page) => {
-    const canvas = renderPageToCanvas(page, options);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.needsUpdate = true;
-    return texture;
-  });
-}

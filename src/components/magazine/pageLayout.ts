@@ -1,4 +1,5 @@
 import { PageContent } from './chinesePublicationData';
+import { TextStyle, getFontEpoch, hasText, lineTop, textLines } from './textMetrics';
 
 export type EditableElementType =
   | 'title'
@@ -25,6 +26,9 @@ export interface PageLayoutElement {
   };
   pageIndex: number;
   text: string;
+  /** 与渲染器共用的绘制样式，用于光标/选区/点击定位 */
+  style: TextStyle;
+  maxLength?: number;
   paragraphIndex?: number;
   poetryIndex?: number;
   noteIndex?: number;
@@ -32,449 +36,309 @@ export interface PageLayoutElement {
   colophonIndex?: number;
 }
 
-const CANVAS_WIDTH = 1440;
-const CANVAS_HEIGHT = 1983;
+export const CANVAS_WIDTH = 1440;
+export const CANVAS_HEIGHT = 1983; // CANVAS_WIDTH * SHEET_ASPECT
 
-// 中文避头尾折行预估算法 (用于纯几何无 Canvas 上下文时的包围盒测算)
-export function estimateWrappedLineCount(
-  text: string,
-  maxWidth: number,
-  charWidth: number
-): number {
-  const charsPerLine = Math.max(1, Math.floor(maxWidth / charWidth));
-  let count = 0;
-  const rawLines = text.split('\n');
-  for (const raw of rawLines) {
-    if (raw.length === 0) {
-      count += 1;
-    } else {
-      count += Math.ceil(raw.length / charsPerLine);
-    }
-  }
-  return Math.max(1, count);
+const PAD = 6;
+
+type Extra = Partial<
+  Pick<
+    PageLayoutElement,
+    'maxLength' | 'paragraphIndex' | 'poetryIndex' | 'noteIndex' | 'tocIndex' | 'colophonIndex'
+  >
+>;
+
+function style(
+  fontSize: number,
+  weight: TextStyle['weight'],
+  align: TextStyle['align'],
+  anchorX: number,
+  baselineY: number,
+  rest: Partial<TextStyle> = {}
+): TextStyle {
+  return {
+    fontSize,
+    weight,
+    align,
+    anchorX,
+    baselineY,
+    baseline: 'alphabetic',
+    lineHeight: fontSize * 1.3,
+    ...rest,
+  };
+}
+
+function lineBox(s: TextStyle, x: number, width: number) {
+  return { x, y: lineTop(s, 0) - PAD, width, height: s.fontSize * 1.25 + PAD * 2 };
 }
 
 /**
- * 计算页面中各排印元素的精确 2D 坐标包围盒
+ * 计算页面中各排印元素的 2D 包围盒及绘制样式。
+ * 所有步长/字号必须与 pageRenderer 的绘制保持一致（单测校验）。
  */
-export function getPageLayoutElements(
-  page: PageContent,
-  pageIndex: number
-): PageLayoutElement[] {
-  const elements: PageLayoutElement[] = [];
+export function getPageLayoutElements(page: PageContent, pageIndex: number): PageLayoutElement[] {
+  const out: PageLayoutElement[] = [];
+  const W = CANVAS_WIDTH;
 
   const isLeftPage = page.sideIndex % 2 === 0;
-  const spineMargin = 150;
-  const outerMargin = 160;
-  const contentLeft = isLeftPage ? outerMargin : spineMargin;
-  const contentRight = isLeftPage ? CANVAS_WIDTH - spineMargin : CANVAS_WIDTH - outerMargin;
+  const contentLeft = isLeftPage ? 160 : 150;
+  const contentRight = isLeftPage ? W - 150 : W - 160;
   const contentWidth = contentRight - contentLeft;
 
-  // 1. 封面 (Cover)
+  const line = (
+    id: string,
+    type: EditableElementType,
+    label: string,
+    text: string,
+    s: TextStyle,
+    x: number,
+    width: number,
+    extra: Extra = {}
+  ) => {
+    out.push({ id, type, label, text, style: s, pageIndex, bounds: lineBox(s, x, width), ...extra });
+  };
+
+  /** 多行段落，返回占用的行数 */
+  const block = (
+    idx: number,
+    label: string,
+    text: string,
+    s: TextStyle,
+    x: number,
+    width: number
+  ): number => {
+    const n = textLines(s, text).lines.length;
+    out.push({
+      id: `paragraph-${idx}`,
+      type: 'paragraph',
+      label,
+      text,
+      style: s,
+      pageIndex,
+      paragraphIndex: idx,
+      bounds: {
+        x,
+        y: lineTop(s, 0) - PAD,
+        width,
+        height: (n - 1) * s.lineHeight + s.fontSize * 1.25 + PAD * 2,
+      },
+    });
+    return n;
+  };
+
+  const seal = (text: string, cx: number, cy: number, size: number, label: string) => {
+    const half = size / 2 + PAD;
+    out.push({
+      id: 'seal',
+      type: 'seal',
+      label,
+      text,
+      pageIndex,
+      maxLength: 4,
+      style: style(size * 0.38, 'bold', 'center', cx, cy),
+      bounds: { x: cx - half, y: cy - half, width: half * 2, height: half * 2 },
+    });
+  };
+
+  // 1. 封面
   if (page.type === 'cover') {
-    // 书名题签框
-    const labelX = CANVAS_WIDTH * 0.68;
+    const labelX = W * 0.68;
     const labelY = 220;
     const labelW = 160;
     const labelH = 820;
-    elements.push({
+    out.push({
       id: 'title',
       type: 'title',
       label: '封面题签书名',
-      bounds: { x: labelX - 10, y: labelY - 10, width: labelW + 20, height: labelH + 20 },
-      pageIndex,
       text: page.title || '',
+      pageIndex,
+      maxLength: 8,
+      style: style(68, 'bold', 'center', labelX + labelW / 2, labelY + 60, {
+        baseline: 'top',
+        lineHeight: 92,
+        vertical: { step: 92 },
+      }),
+      bounds: { x: labelX - 10, y: labelY - 10, width: labelW + 20, height: labelH + 20 },
     });
 
-    // 副标题
     const subX = 220;
     let subY = 680;
-    if (page.subtitle) {
-      elements.push({
-        id: 'subtitle',
-        type: 'subtitle',
-        label: '封面副标题',
-        bounds: { x: subX - 15, y: subY - 40, width: 440, height: 60 },
-        pageIndex,
-        text: page.subtitle,
-      });
+    if (hasText(page.subtitle)) {
+      const s = style(34, 500, 'left', subX, subY, { baseline: 'top' });
+      line('subtitle', 'subtitle', '封面副标题', page.subtitle, s, subX - 15, 440);
       subY += 60;
     }
-
-    // 作者
-    if (page.author) {
-      elements.push({
-        id: 'author',
-        type: 'author',
-        label: '著作者',
-        bounds: { x: subX - 15, y: subY - 35, width: 360, height: 55 },
-        pageIndex,
-        text: page.author,
-      });
+    if (hasText(page.author)) {
+      const s = style(28, 400, 'left', subX, subY, { baseline: 'top' });
+      line('author', 'author', '著作者', page.author, s, subX - 15, 360);
     }
-
-    // 朱砂印章
-    const sealX = subX + 46;
-    const sealY = subY + 120;
-    elements.push({
-      id: 'seal',
-      type: 'seal',
-      label: '朱砂印章',
-      bounds: { x: sealX - 48, y: sealY - 48, width: 96, height: 96 },
-      pageIndex,
-      text: page.sealText || '文心典藏',
-    });
-
-    return elements;
+    seal(page.sealText || '文心典藏', subX + 46, subY + 120, 84, '朱砂印章');
+    return out;
   }
 
-  // 2. 封底版权页 (Colophon)
+  // 2. 封底版权页
   if (page.type === 'colophon') {
     const boxW = 860;
     const boxH = 920;
-    const boxX = (CANVAS_WIDTH - boxW) / 2;
+    const boxX = (W - boxW) / 2;
     const boxY = (CANVAS_HEIGHT - boxH) / 2;
 
-    elements.push({
-      id: 'title',
-      type: 'title',
-      label: '版权页标题',
-      bounds: { x: boxX + 60, y: boxY + 30, width: boxW - 120, height: 70 },
-      pageIndex,
-      text: page.title || '图书在版编目（ＣＩＰ）数据',
-    });
+    const ts = style(42, 'bold', 'center', W / 2, boxY + 80);
+    line('title', 'title', '版权页标题', page.title || '图书在版编目（ＣＩＰ）数据', ts, boxX + 60, boxW - 120);
 
     let cy = boxY + 190;
-    if (page.colophonDetails) {
-      page.colophonDetails.forEach((item, idx) => {
-        elements.push({
-          id: `colophon-${idx}`,
-          type: 'colophonItem',
-          label: `${item.key}`,
-          bounds: { x: boxX + 60, y: cy - 35, width: boxW - 120, height: 50 },
-          pageIndex,
-          text: item.value,
-          colophonIndex: idx,
-        });
-        cy += 54;
+    page.colophonDetails?.forEach((item, idx) => {
+      const s = style(28, 400, 'left', boxX + 280, cy);
+      line(`colophon-${idx}`, 'colophonItem', item.key, item.value, s, boxX + 270, boxW - 330, {
+        colophonIndex: idx,
       });
-    }
-
-    // 印章
-    elements.push({
-      id: 'seal',
-      type: 'seal',
-      label: '出版印章',
-      bounds: { x: CANVAS_WIDTH / 2 - 45, y: boxY + boxH - 120 - 45, width: 90, height: 90 },
-      pageIndex,
-      text: page.sealText || '文心出版',
+      cy += 54;
     });
 
-    return elements;
+    seal(page.sealText || '文心出版', W / 2, boxY + boxH - 120, 72, '出版印章');
+    return out;
   }
 
-  // 3. 通用书眉 (Running Header)
-  if (page.headerText) {
-    elements.push({
-      id: 'header',
-      type: 'header',
-      label: '书眉顶标',
-      bounds: { x: contentLeft - 10, y: 90, width: contentWidth + 20, height: 54 },
-      pageIndex,
-      text: page.headerText,
-    });
+  // 3. 书眉
+  if (hasText(page.headerText)) {
+    const s = style(
+      24,
+      400,
+      isLeftPage ? 'left' : 'right',
+      isLeftPage ? contentLeft : contentRight,
+      127
+    );
+    line('header', 'header', '书眉顶标', page.headerText, s, contentLeft - 10, contentWidth + 20);
   }
 
-  // 4. 扉页 (Frontispiece)
+  // 4. 扉页
   if (page.type === 'frontispiece') {
-    let startY = 420;
-    elements.push({
-      id: 'title',
-      type: 'title',
-      label: '扉页书名',
-      bounds: { x: CANVAS_WIDTH / 2 - 320, y: startY - 55, width: 640, height: 80 },
-      pageIndex,
-      text: page.title || '',
-    });
-
-    if (page.subtitle) {
-      startY += 70;
-      elements.push({
-        id: 'subtitle',
-        type: 'subtitle',
-        label: '扉页副标题',
-        bounds: { x: CANVAS_WIDTH / 2 - 260, y: startY - 35, width: 520, height: 55 },
-        pageIndex,
-        text: page.subtitle,
-      });
+    let y = 420;
+    line('title', 'title', '扉页书名', page.title || '', style(54, 'bold', 'center', W / 2, y), W / 2 - 320, 640);
+    if (hasText(page.subtitle)) {
+      y += 70;
+      line('subtitle', 'subtitle', '扉页副标题', page.subtitle, style(28, 400, 'center', W / 2, y), W / 2 - 260, 520);
     }
-
-    startY += 120;
+    y += 120;
     const pWidth = 840;
-    const pLeft = (CANVAS_WIDTH - pWidth) / 2;
-    if (page.paragraphs) {
-      page.paragraphs.forEach((p, idx) => {
-        const lineCount = estimateWrappedLineCount('　　' + p, pWidth, 32);
-        const pHeight = lineCount * 58 + 20;
-        elements.push({
-          id: `paragraph-${idx}`,
-          type: 'paragraph',
-          label: `题记段落 ${idx + 1}`,
-          bounds: { x: pLeft - 15, y: startY - 35, width: pWidth + 30, height: pHeight },
-          pageIndex,
-          paragraphIndex: idx,
-          text: p,
-        });
-        startY += pHeight + 28;
-      });
-    }
-
-    if (page.sealText) {
-      elements.push({
-        id: 'seal',
-        type: 'seal',
-        label: '朱砂印章',
-        bounds: { x: CANVAS_WIDTH / 2 - 42, y: startY + 60 - 42, width: 84, height: 84 },
-        pageIndex,
-        text: page.sealText,
-      });
-    }
-
-    return elements;
+    const pLeft = (W - pWidth) / 2;
+    page.paragraphs?.forEach((p, idx) => {
+      const s = style(32, 400, 'left', pLeft, y, { lineHeight: 58, maxWidth: pWidth, prefix: '　　' });
+      const n = block(idx, `题记段落 ${idx + 1}`, p, s, pLeft - 15, pWidth + 30);
+      y += n * 58 + 28;
+    });
+    if (hasText(page.sealText)) seal(page.sealText, W / 2, y + 60, 68, '朱砂印章');
+    return out;
   }
 
-  // 5. 目录 (TOC)
+  // 5. 目录
   if (page.type === 'toc') {
-    let startY = 240;
-    elements.push({
-      id: 'title',
-      type: 'title',
-      label: '目录标题',
-      bounds: { x: CANVAS_WIDTH / 2 - 200, y: startY - 55, width: 400, height: 75 },
-      pageIndex,
-      text: page.title || '',
+    let y = 240;
+    line('title', 'title', '目录标题', page.title || '', style(56, 'bold', 'center', W / 2, y), W / 2 - 200, 400);
+    if (hasText(page.subtitle)) {
+      y += 50;
+      line('subtitle', 'subtitle', '目次副题', page.subtitle, style(22, 500, 'center', W / 2, y), W / 2 - 180, 360);
+    }
+    y += 140;
+    page.tocItems?.forEach((item, idx) => {
+      const s = style(32, 500, 'left', contentLeft, y);
+      line(`toc-${idx}`, 'tocItem', `篇目 ${idx + 1} · ${item.title}`, item.title, s, contentLeft - 15, contentWidth + 30, {
+        tocIndex: idx,
+      });
+      y += 84;
     });
-
-    if (page.subtitle) {
-      startY += 50;
-      elements.push({
-        id: 'subtitle',
-        type: 'subtitle',
-        label: '目次副题',
-        bounds: { x: CANVAS_WIDTH / 2 - 180, y: startY - 30, width: 360, height: 45 },
-        pageIndex,
-        text: page.subtitle,
-      });
-    }
-
-    startY += 140;
-    if (page.tocItems) {
-      page.tocItems.forEach((item, idx) => {
-        elements.push({
-          id: `toc-${idx}`,
-          type: 'tocItem',
-          label: `篇目 ${idx + 1} · ${item.title}`,
-          bounds: { x: contentLeft - 15, y: startY - 35, width: contentWidth + 30, height: 60 },
-          pageIndex,
-          tocIndex: idx,
-          text: item.title,
-        });
-        startY += 84;
-      });
-    }
-
-    return elements;
+    return out;
   }
 
-  // 6. 章节扉页 (Chapter)
+  // 6. 章节扉页
   if (page.type === 'chapter') {
-    let startY = 480;
-    if (page.chapterNumber) {
-      elements.push({
-        id: 'chapterNumber',
-        type: 'chapterNumber',
-        label: '章节序号',
-        bounds: { x: CANVAS_WIDTH / 2 - 180, y: startY - 35, width: 360, height: 50 },
-        pageIndex,
-        text: page.chapterNumber,
-      });
-      startY += 60;
+    let y = 480;
+    if (hasText(page.chapterNumber)) {
+      line('chapterNumber', 'chapterNumber', '章节序号', page.chapterNumber, style(32, 'bold', 'center', W / 2, y), W / 2 - 180, 360);
+      y += 60;
     }
-
-    elements.push({
-      id: 'title',
-      type: 'title',
-      label: '章节主标题',
-      bounds: { x: CANVAS_WIDTH / 2 - 360, y: startY - 60, width: 720, height: 85 },
-      pageIndex,
-      text: page.title || '',
+    line('title', 'title', '章节主标题', page.title || '', style(64, 'bold', 'center', W / 2, y), W / 2 - 360, 720);
+    if (hasText(page.subtitle)) {
+      y += 64;
+      line('subtitle', 'subtitle', '章节副题', page.subtitle, style(28, 400, 'center', W / 2, y), W / 2 - 250, 500);
+    }
+    if (hasText(page.author)) {
+      y += 54;
+      line('author', 'author', '作者', page.author, style(30, 500, 'center', W / 2, y), W / 2 - 200, 400);
+    }
+    y += 120;
+    const dWidth = 780;
+    const dLeft = (W - dWidth) / 2;
+    page.paragraphs?.forEach((p, idx) => {
+      const s = style(30, 400, 'left', dLeft, y, { lineHeight: 56, maxWidth: dWidth, prefix: '　　' });
+      const n = block(idx, `导语段落 ${idx + 1}`, p, s, dLeft - 15, dWidth + 30);
+      y += n * 56;
     });
-
-    if (page.subtitle) {
-      startY += 64;
-      elements.push({
-        id: 'subtitle',
-        type: 'subtitle',
-        label: '章节副题',
-        bounds: { x: CANVAS_WIDTH / 2 - 250, y: startY - 35, width: 500, height: 50 },
-        pageIndex,
-        text: page.subtitle,
-      });
-    }
-
-    if (page.author) {
-      startY += 54;
-      elements.push({
-        id: 'author',
-        type: 'author',
-        label: '作者',
-        bounds: { x: CANVAS_WIDTH / 2 - 200, y: startY - 35, width: 400, height: 50 },
-        pageIndex,
-        text: page.author,
-      });
-    }
-
-    startY += 120;
-    const descWidth = 780;
-    const descLeft = (CANVAS_WIDTH - descWidth) / 2;
-    if (page.paragraphs) {
-      page.paragraphs.forEach((p, idx) => {
-        const lineCount = estimateWrappedLineCount('　　' + p, descWidth, 30);
-        const pHeight = lineCount * 56 + 10;
-        elements.push({
-          id: `paragraph-${idx}`,
-          type: 'paragraph',
-          label: `导语段落 ${idx + 1}`,
-          bounds: { x: descLeft - 15, y: startY - 35, width: descWidth + 30, height: pHeight },
-          pageIndex,
-          paragraphIndex: idx,
-          text: p,
-        });
-        startY += pHeight + 20;
-      });
-    }
-
-    if (page.sealText) {
-      elements.push({
-        id: 'seal',
-        type: 'seal',
-        label: '朱砂印章',
-        bounds: { x: CANVAS_WIDTH / 2 - 45, y: startY + 80 - 45, width: 90, height: 90 },
-        pageIndex,
-        text: page.sealText,
-      });
-    }
-
-    return elements;
+    if (hasText(page.sealText)) seal(page.sealText, W / 2, y + 80, 72, '朱砂印章');
+    return out;
   }
 
-  // 7. 诗歌页 (Poetry)
+  // 7. 诗歌页
   if (page.type === 'poetry') {
-    let startY = 260;
-    elements.push({
-      id: 'title',
-      type: 'title',
-      label: '诗篇题名',
-      bounds: { x: CANVAS_WIDTH / 2 - 260, y: startY - 50, width: 520, height: 70 },
-      pageIndex,
-      text: page.title || '',
-    });
-
-    if (page.subtitle) {
-      startY += 48;
-      elements.push({
-        id: 'subtitle',
-        type: 'subtitle',
-        label: '诗序小引',
-        bounds: { x: CANVAS_WIDTH / 2 - 220, y: startY - 30, width: 440, height: 48 },
-        pageIndex,
-        text: page.subtitle,
-      });
+    let y = 260;
+    line('title', 'title', '诗篇题名', page.title || '', style(48, 'bold', 'center', W / 2, y), W / 2 - 260, 520);
+    if (hasText(page.subtitle)) {
+      y += 48;
+      line('subtitle', 'subtitle', '诗序小引', page.subtitle, style(26, 400, 'center', W / 2, y), W / 2 - 220, 440);
     }
-
-    if (page.author) {
-      startY += 46;
-      elements.push({
-        id: 'author',
-        type: 'author',
-        label: '诗人名号',
-        bounds: { x: CANVAS_WIDTH / 2 - 180, y: startY - 30, width: 360, height: 48 },
-        pageIndex,
-        text: page.author,
-      });
+    if (hasText(page.author)) {
+      y += 46;
+      line('author', 'author', '诗人名号', page.author, style(28, 400, 'center', W / 2, y), W / 2 - 180, 360);
     }
-
-    startY += 80;
-    if (page.poetryLines) {
-      page.poetryLines.forEach((line, idx) => {
-        if (line !== '') {
-          elements.push({
-            id: `poetry-${idx}`,
-            type: 'poetryLine',
-            label: `诗句 ${idx + 1}`,
-            bounds: { x: CANVAS_WIDTH / 2 - 320, y: startY - 35, width: 640, height: 54 },
-            pageIndex,
-            poetryIndex: idx,
-            text: line,
-          });
-          startY += 56;
-        } else {
-          startY += 36;
-        }
+    y += 80;
+    page.poetryLines?.forEach((l, idx) => {
+      if (l === '') {
+        y += 36;
+        return;
+      }
+      line(`poetry-${idx}`, 'poetryLine', `诗句 ${idx + 1}`, l, style(32, 400, 'center', W / 2, y), W / 2 - 320, 640, {
+        poetryIndex: idx,
       });
-    }
-
-    return elements;
-  }
-
-  // 8. 默认散文与通栏排印页 (Spread)
-  let startY = 220;
-  if (page.title) {
-    elements.push({
-      id: 'title',
-      type: 'title',
-      label: '文章篇名',
-      bounds: { x: contentLeft - 15, y: startY - 45, width: contentWidth + 30, height: 65 },
-      pageIndex,
-      text: page.title,
+      y += 56;
     });
-    startY += 70;
+    return out;
   }
 
-  if (page.paragraphs) {
-    page.paragraphs.forEach((p, idx) => {
-      const lineCount = estimateWrappedLineCount('　　' + p, contentWidth, 31);
-      const pHeight = lineCount * 60 + 10;
-      elements.push({
-        id: `paragraph-${idx}`,
-        type: 'paragraph',
-        label: `正文段落 ${idx + 1}`,
-        bounds: { x: contentLeft - 15, y: startY - 35, width: contentWidth + 30, height: pHeight },
-        pageIndex,
-        paragraphIndex: idx,
-        text: p,
-      });
-      startY += pHeight + 26;
+  // 8. 默认散文页
+  let y = 220;
+  if (hasText(page.title)) {
+    line('title', 'title', '文章篇名', page.title, style(40, 'bold', 'left', contentLeft, y), contentLeft - 15, contentWidth + 30);
+    y += 70;
+  }
+  page.paragraphs?.forEach((p, idx) => {
+    const s = style(31, 400, 'left', contentLeft, y, { lineHeight: 60, maxWidth: contentWidth, prefix: '　　' });
+    const n = block(idx, `正文段落 ${idx + 1}`, p, s, contentLeft - 15, contentWidth + 30);
+    y += n * 60 + 26;
+  });
+
+  let ny = CANVAS_HEIGHT - 320 + 36;
+  page.notes?.forEach((n, idx) => {
+    line(`note-${idx}`, 'note', `注释 ${idx + 1}`, n, style(24, 400, 'left', contentLeft, ny), contentLeft - 15, contentWidth + 30, {
+      noteIndex: idx,
     });
-  }
+    ny += 38;
+  });
 
-  // 脚注
-  if (page.notes && page.notes.length > 0) {
-    let ny = CANVAS_HEIGHT - 320 + 36;
-    page.notes.forEach((n, idx) => {
-      elements.push({
-        id: `note-${idx}`,
-        type: 'note',
-        label: `注释 ${idx + 1}`,
-        bounds: { x: contentLeft - 15, y: ny - 30, width: contentWidth + 30, height: 42 },
-        pageIndex,
-        noteIndex: idx,
-        text: n,
-      });
-      ny += 38;
-    });
-  }
+  return out;
+}
 
+const layoutCache = new WeakMap<
+  PageContent,
+  { pageIndex: number; epoch: number; elements: PageLayoutElement[] }
+>();
+
+/** 带缓存的版式计算：同一份页面数据（不可变更新）只算一次 */
+export function getCachedLayoutElements(page: PageContent, pageIndex: number): PageLayoutElement[] {
+  const epoch = getFontEpoch();
+  const hit = layoutCache.get(page);
+  if (hit && hit.pageIndex === pageIndex && hit.epoch === epoch) return hit.elements;
+  const elements = getPageLayoutElements(page, pageIndex);
+  layoutCache.set(page, { pageIndex, epoch, elements });
   return elements;
 }
 
@@ -487,15 +351,14 @@ export function findLayoutElementAtCoords(
   y: number
 ): PageLayoutElement | null {
   for (let i = elements.length - 1; i >= 0; i--) {
-    const el = elements[i];
-    const { bounds } = el;
+    const { bounds } = elements[i];
     if (
       x >= bounds.x &&
       x <= bounds.x + bounds.width &&
       y >= bounds.y &&
       y <= bounds.y + bounds.height
     ) {
-      return el;
+      return elements[i];
     }
   }
   return null;
