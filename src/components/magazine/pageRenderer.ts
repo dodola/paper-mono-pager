@@ -1,6 +1,15 @@
 import { PageContent } from './chinesePublicationData';
 import { CANVAS_WIDTH, CANVAS_HEIGHT, getCachedLayoutElements } from './pageLayout';
-import { WENKAI_FONT, hasText, wrapText, caretGeometry, selectionRects } from './textMetrics';
+import {
+  WENKAI_FONT,
+  hasText,
+  wrapText,
+  caretGeometry,
+  selectionRects,
+  type Rect,
+  type TextStyle,
+} from './textMetrics';
+import { buildSelectionShape, traceSegments, rgba } from './selectionShape';
 
 export interface RenderOptions {
   paperColor?: string;
@@ -203,6 +212,46 @@ function drawActiveBox(
   ctx.restore();
 }
 
+// 融合选区：外圆角 + 行间内倒角，半透明渐变填充、细描边与柔光
+function paintSelection(
+  ctx: CanvasRenderingContext2D,
+  style: TextStyle,
+  rects: Rect[],
+  accent: string
+) {
+  if (rects.length === 0) return;
+  const segs = buildSelectionShape(rects, {
+    cornerRadius: style.fontSize * 0.32,
+    filletRadius: style.fontSize * 0.4,
+    padX: Math.max(2, style.fontSize * 0.1),
+  });
+  if (segs.length === 0) return;
+
+  const top = Math.min(...rects.map((r) => r.y));
+  const bottom = Math.max(...rects.map((r) => r.y + r.height));
+  const left = Math.min(...rects.map((r) => r.x));
+  const right = Math.max(...rects.map((r) => r.x + r.width));
+
+  ctx.save();
+  ctx.beginPath();
+  traceSegments(ctx, segs);
+
+  const grad = ctx.createLinearGradient(left, top, right, bottom);
+  grad.addColorStop(0, rgba(accent, 0.34));
+  grad.addColorStop(1, rgba(accent, 0.2));
+  ctx.shadowColor = rgba(accent, 0.55);
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = rgba(accent, 0.7);
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.restore();
+}
+
 // 绘制原生打字光标 | 与选区高亮：几何完全来自版式样式，保证与文字对位
 export function paintEditOverlay(
   ctx: CanvasRenderingContext2D,
@@ -228,12 +277,7 @@ export function paintEditOverlay(
   const end = editState.selectionEnd ?? start;
 
   if (start !== end) {
-    ctx.save();
-    ctx.fillStyle = 'rgba(155, 45, 38, 0.22)';
-    for (const r of selectionRects(el.style, el.text, start, end)) {
-      ctx.fillRect(r.x, r.y, r.width, r.height);
-    }
-    ctx.restore();
+    paintSelection(ctx, el.style, selectionRects(el.style, el.text, start, end), options.accentColor);
   } else if (editState.caretVisible) {
     const g = caretGeometry(el.style, el.text, start);
     ctx.save();
