@@ -6,9 +6,13 @@ import React, {
   useRef,
   useState,
   useCallback,
+  useSyncExternalStore,
 } from 'react';
 import textureUrl from './assets/texture.webp?inline';
 import { MagazineEngine } from './magazine/MagazineEngine';
+import { MobileMagazineEngine } from './magazine/mobile/MobileMagazineEngine';
+import { pageToSheet, sheetToSpread } from './magazine/spread';
+import { DEFAULT_SINGLE_PAGE_QUERY, mobileStageSize } from './magazine/mobile/mobileModel';
 import { pageSound } from './magazine/pageSound';
 import { CHINESE_PAGES, getAllBookText, PageContent } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
@@ -84,6 +88,12 @@ export interface PaperMagazineProps {
   autoPlay?: boolean;
   /** 自动连读的翻页间隔（毫秒），默认 2800 */
   autoPlayInterval?: number;
+  /**
+   * 命中该媒体查询时使用单页堆叠布局（一次一页，手势翻页），否则使用双页对开。
+   * 默认 `(max-width: 1023px), (orientation: portrait)`：窄屏或竖屏都走单页；
+   * 想让双页更早出现可改成 `(max-width: 767px)`；传 `'all'` 则始终单页。
+   */
+  singlePageQuery?: string;
 }
 
 export const DEFAULT_PAPER_THEMES: PaperTheme[] = [
@@ -92,6 +102,9 @@ export const DEFAULT_PAPER_THEMES: PaperTheme[] = [
   { name: '暖调象牙', bg: '#FDFBF7', text: '#25211E', accent: '#A03B26' },
   { name: '怀旧古纸', bg: '#F5EFE6', text: '#2C2723', accent: '#8C2B21' },
 ];
+
+/** 单页模式底部提示条占用的高度（含间距），舞台内容避开它 */
+const MOBILE_HINT_RESERVE_PX = 36;
 
 export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>(function PaperMagazine(
   {
@@ -110,6 +123,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     defaultSoundEnabled = true,
     autoPlay: autoPlayProp = false,
     autoPlayInterval = 2800,
+    singlePageQuery = DEFAULT_SINGLE_PAGE_QUERY,
   },
   ref
 ) {
@@ -117,13 +131,28 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
   const PAPER_THEMES = themes;
   const stageWrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const engineRef = useRef<MagazineEngine | null>(null);
+  const engineRef = useRef<MagazineEngine | MobileMagazineEngine | null>(null);
+  /** 窄屏走单页堆叠引擎：一次一页，左右滑动翻页；宽屏保持双页跨页 */
+  const subscribeSinglePage = useCallback(
+    (onChange: () => void) => {
+      const mq = window.matchMedia(singlePageQuery);
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    },
+    [singlePageQuery]
+  );
+  const isMobile = useSyncExternalStore(
+    subscribeSinglePage,
+    () => window.matchMedia(singlePageQuery).matches,
+    () => false
+  );
+  const pageIndexRef = useRef(0);
   const readerRef = useRef<ReaderController | null>(null);
   const pagesRef = useRef<PageContent[]>([]);
   const themeIndexRef = useRef(0);
 
   const [internalEditMode, setInternalEditMode] = useState(false);
-  const isEditMode = editable && (propIsEditMode !== undefined ? propIsEditMode : internalEditMode);
+  const isEditMode = editable && !isMobile && (propIsEditMode !== undefined ? propIsEditMode : internalEditMode);
   const toggleEditMode = () => {
     if (onToggleEditMode) {
       onToggleEditMode(!isEditMode);
@@ -149,9 +178,10 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
   );
 
   // 动态自适应尺寸（保持 1.44753 宽高比，最大限度填满可用空间）
-  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
+  const [stageSize, setStageSize] = useState<{ width: number; height: number; offsetY: number }>({
     width: 1181,
     height: 816,
+    offsetY: 0,
   });
 
   pagesRef.current = pages;
@@ -170,6 +200,12 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
 
     const updateSize = (pW: number, pH: number) => {
       if (!pW || !pH) return;
+      if (isMobile) {
+        // 单页：按内容范围（书页 + 左侧卷边 + 顶部纸扇）撑满可用区域，容器可以比可视区域大
+        const s = mobileStageSize(pW, pH, MOBILE_HINT_RESERVE_PX);
+        setStageSize({ width: Math.floor(s.width), height: Math.floor(s.height), offsetY: Math.round(s.offsetY) });
+        return;
+      }
       // 预留微小安全边距
       const availableW = Math.max(280, pW - 16);
       const availableH = Math.max(200, pH - 16);
@@ -185,6 +221,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       setStageSize({
         width: Math.floor(w),
         height: Math.floor(h),
+        offsetY: 0,
       });
     };
 
@@ -195,7 +232,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
 
     ro.observe(stageWrapperRef.current);
     return () => ro.disconnect();
-  }, []);
+  }, [isMobile]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -207,34 +244,63 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       accentColor: currentTheme.accent,
     };
 
-    const engine = new MagazineEngine({
-      container: containerRef.current,
-      pageContents: pages,
-      patternUrl,
-      renderOptions,
-      onPageChange: (sheetIdx, left, right) => {
-        setCurrentSheet(sheetIdx);
-        setLeftPage(left);
-        setRightPage(right);
-        pageSound.playFlip();
-        readerRef.current?.onPageChange();
-        onPageChangeRef.current?.({
-          sheet: sheetIdx,
-          totalSheets: engine.getTotalSheets(),
-          leftPage: left,
-          rightPage: right,
-        });
-        if (right !== null) {
-          setActiveEditPageIndex(right - 1);
-        } else if (left !== null) {
-          setActiveEditPageIndex(left - 1);
-        }
-      },
-    });
+    let engine: MagazineEngine | MobileMagazineEngine;
+    const handlePageChange = (sheetIdx: number, left: number | null, right: number | null) => {
+      setCurrentSheet(sheetIdx);
+      setLeftPage(left);
+      setRightPage(right);
+      pageSound.playFlip();
+      readerRef.current?.onPageChange();
+      onPageChangeRef.current?.({
+        sheet: sheetIdx,
+        totalSheets: engine.getTotalSheets(),
+        leftPage: left,
+        rightPage: right,
+      });
+      if (right !== null) {
+        setActiveEditPageIndex(right - 1);
+        pageIndexRef.current = right - 1;
+      } else if (left !== null) {
+        setActiveEditPageIndex(left - 1);
+        pageIndexRef.current = left - 1;
+      }
+    };
+
+    if (isMobile) {
+      // 从桌面布局切换过来时保持阅读位置
+      const startAt = Math.min(Math.max(pageIndexRef.current, 0), Math.max(pagesRef.current.length - 1, 0));
+      engine = new MobileMagazineEngine({
+        container: containerRef.current,
+        pageContents: pages,
+        patternUrl,
+        renderOptions,
+        initialIndex: startAt,
+        onPageChange: handlePageChange,
+      });
+      setCurrentSheet(startAt);
+      setLeftPage(null);
+      setRightPage(startAt + 1);
+    } else {
+      // 从单页布局切换过来时保持阅读位置
+      const startSheet = pageToSheet(pageIndexRef.current);
+      engine = new MagazineEngine({
+        container: containerRef.current,
+        pageContents: pages,
+        patternUrl,
+        renderOptions,
+        initialSheet: startSheet,
+        onPageChange: handlePageChange,
+      });
+      const spread = sheetToSpread(engine.getCurrentSheet(), engine.getTotalSheets(), pages.length);
+      setCurrentSheet(engine.getCurrentSheet());
+      setLeftPage(spread.left);
+      setRightPage(spread.right);
+    }
 
     engineRef.current = engine;
     setTotalSheets(engine.getTotalSheets());
 
+    // 阅读器同时接入两种引擎；移动端的触摸指针不交给阅读器，保证滑动翻页优先
     readerRef.current = new ReaderController({
       engine,
       getPages: () => pagesRef.current,
@@ -250,7 +316,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       engine.dispose();
       engineRef.current = null;
     };
-  }, []);
+  }, [isMobile]);
 
   // 阅读器随编辑内容与编辑模式同步：编辑时让位，退出后重绘阅读层
   useEffect(() => {
@@ -303,8 +369,12 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
   }, [initialPages]);
 
   const handleGoToPage = useCallback((index: number) => {
-    const targetSheet = index === 0 ? 0 : Math.floor((index + 1) / 2);
-    engineRef.current?.goToSheet(targetSheet);
+    const engine = engineRef.current;
+    if (engine instanceof MobileMagazineEngine) {
+      engine.goToPage(index);
+      return;
+    }
+    engine?.goToSheet(pageToSheet(index));
   }, []);
 
   useImperativeHandle(
@@ -345,8 +415,10 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
         engineRef.current?.goToSheet(0);
       } else if (e.key === 'End') {
         e.preventDefault();
-        if (engineRef.current) {
-          engineRef.current.goToSheet(engineRef.current.getTotalSheets());
+        const engine = engineRef.current;
+        if (engine) {
+          // 单页堆叠的位置是页序号（最后一页 = 总数 - 1）；双页则是对开页序号（封底 = 总数）
+          engine.goToSheet(engine instanceof MobileMagazineEngine ? engine.getTotalSheets() - 1 : engine.getTotalSheets());
         }
       }
     };
@@ -364,7 +436,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       const current = engineRef.current.getCurrentSheet();
       const total = engineRef.current.getTotalSheets();
 
-      if (current >= total) {
+      if (current >= total && !(engineRef.current instanceof MobileMagazineEngine)) {
         engineRef.current.goToSheet(0);
       } else {
         engineRef.current.flipNext();
@@ -397,7 +469,13 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     engineRef.current?.goToSheet(sheetIdx);
   };
 
+  /** 当前位置的上限：单页堆叠为最后一页的序号，双页为封底的对开页序号 */
+  const lastPosition = isMobile ? Math.max(totalSheets - 1, 0) : totalSheets;
+
   const formatSpreadLabel = () => {
+    if (isMobile) {
+      return rightPage ? `第 ${rightPage} 页 ${pages[rightPage - 1]?.title ?? ''}`.trim() : '';
+    }
     if (currentSheet === 0) return `封面 · ${pages[0]?.title || '卷首'}`;
     if (currentSheet === totalSheets)
       return `封底 · ${pages[pages.length - 1]?.title || '版权页'}`;
@@ -416,13 +494,14 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       {/* 1. 书籍主体展示区：自适应 Window 大小，填满中间所有可用空间 */}
       <div
         ref={stageWrapperRef}
-        className="relative flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden p-2 sm:p-4"
+        className={`relative flex-1 min-h-0 w-full flex items-center justify-center overflow-hidden ${isMobile ? 'p-0' : 'p-2 sm:p-4'}`}
       >
         <div
           className="relative transition-all duration-75"
           style={{
             width: `${stageSize.width}px`,
             height: `${stageSize.height}px`,
+            ...(stageSize.offsetY ? { transform: `translateY(${stageSize.offsetY}px)` } : null),
           }}
         >
           {/* Magazine 3D Engine Mount Point */}
@@ -434,7 +513,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
           />
 
           {/* 原生 3D 纹理层排印编辑器 (Native In-Texture 3D Editor) */}
-          {editable && isEditMode && (
+          {editable && isEditMode && engineRef.current instanceof MagazineEngine && (
             <Native3DEditor
               engine={engineRef.current}
               currentSheet={currentSheet}
@@ -451,15 +530,15 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
           )}
 
           {/* 交互提示气泡 (非编辑模式下显示) */}
-          {!isEditMode && (
+          {!isEditMode && !isMobile && (
             <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity whitespace-nowrap">
               <Sparkles className="size-3 text-[#e5b299]" />
               <span>拖拽页边翻页 · 选中文字可复制、划线 · 右键更多</span>
             </div>
           )}
 
-          {/* 左右快捷翻页悬浮按钮 (非编辑模式下显示) */}
-          {!isEditMode && (
+          {/* 左右快捷翻页悬浮按钮 (非编辑模式、非移动端显示：移动端靠手势) */}
+          {!isEditMode && !isMobile && (
             <>
               <button
                 onClick={() => engineRef.current?.flipPrev()}
@@ -480,6 +559,14 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
             </>
           )}
         </div>
+
+        {/* 单页模式的提示气泡：放在舞台外层，容器比可视区域大时也不会被裁掉 */}
+        {isMobile && !isEditMode && (
+          <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 whitespace-nowrap">
+            <Sparkles className="size-3 text-[#e5b299]" />
+            <span>左右滑动翻页 · 点击页面翻一页 · 按住连翻</span>
+          </div>
+        )}
       </div>
 
         {/* 2. 底部控制栏与跳转胶囊：对齐窗口最底部 (Align Window Bottom) */}
@@ -500,7 +587,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
                 {formatSpreadLabel()}
               </span>
               <span className="text-[11px] text-[#242220]/45 font-mono">
-                ({currentSheet}/{totalSheets})
+                ({isMobile ? currentSheet + 1 : currentSheet}/{totalSheets})
               </span>
             </div>
 
@@ -509,8 +596,8 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
               <input
                 type="range"
                 min={0}
-                max={totalSheets}
-                value={currentSheet}
+                max={lastPosition}
+                value={Math.min(currentSheet, lastPosition)}
                 onChange={handleSliderChange}
                 className="w-full h-1 bg-[#E2DED4] rounded-lg appearance-none cursor-pointer accent-[#9B2D26]"
               />
@@ -537,7 +624,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
               </div>
 
               {/* 编辑模式切换 */}
-              {editable && (
+              {editable && !isMobile && (
               <button
                 onClick={toggleEditMode}
                 title={isEditMode ? '收起排印编辑侧栏' : '开启页面排印编辑模式'}
@@ -585,9 +672,15 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
           </div>
 
           {/* 缩略目录快速跳转条 */}
-          <div className="w-full max-w-[960px] flex items-center justify-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
-            {Array.from({ length: totalSheets + 1 }).map((_, idx) => {
-              const pageNum = idx === 0 ? '封面' : idx === totalSheets ? '封底' : `${2 * idx - 1}-${2 * idx}`;
+          <div className={`w-full max-w-[960px] flex items-center ${isMobile ? 'justify-start' : 'justify-center'} gap-1.5 overflow-x-auto pb-0.5 scrollbar-none`}>
+            {Array.from({ length: lastPosition + 1 }).map((_, idx) => {
+              const pageNum = isMobile
+                ? `${idx + 1}`
+                : idx === 0
+                  ? '封面'
+                  : idx === totalSheets
+                    ? '封底'
+                    : `${2 * idx - 1}-${2 * idx}`;
               return (
                 <button
                   key={idx}

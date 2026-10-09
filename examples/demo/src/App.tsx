@@ -13,7 +13,7 @@ export default function App() {
           <span className="flex size-6 items-center justify-center rounded bg-[#9B2D26] text-white text-xs font-bold shadow-xs">
             文
           </span>
-          <span className="font-bold text-sm sm:text-base tracking-widest text-[#242220]">
+          <span className="font-bold text-sm sm:text-base tracking-widest text-[#242220] whitespace-nowrap">
             文心雅集
           </span>
           <span className="text-xs text-[#242220]/40 pl-1 hidden sm:inline">
@@ -29,7 +29,7 @@ export default function App() {
           {/* 编辑模式顶栏入口 */}
           <button
             onClick={() => setIsEditMode((prev) => !prev)}
-            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-medium text-xs transition-colors cursor-pointer ${
+            className={`hidden lg:inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-medium text-xs transition-colors cursor-pointer ${
               isEditMode
                 ? 'bg-[#9B2D26] text-white shadow-xs'
                 : 'bg-[#9B2D26]/10 text-[#9B2D26] hover:bg-[#9B2D26]/15'
@@ -43,7 +43,7 @@ export default function App() {
             href="https://paper.design/mono"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-medium text-xs bg-black/5 hover:bg-black/10 text-[#242220] transition-colors"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-medium text-xs whitespace-nowrap bg-black/5 hover:bg-black/10 text-[#242220] transition-colors"
           >
             <span>原站 paper.design</span>
             <ExternalLink className="size-3 text-[#242220]/50" />
