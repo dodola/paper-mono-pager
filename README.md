@@ -48,28 +48,81 @@
 
 ---
 
-## 🚀 快速启动
+## 📦 作为组件库使用
 
-### 1. 克隆项目
+> 暂未发布到 npm，目前通过源码接入（参考 `examples/demo`：在 Vite 中把 `paper-mono-pager` 别名到 `packages/paper-mono-pager/src/index.ts`，或作为 workspace 依赖引用）。发布后即可按下面方式安装。
+
+```bash
+npm install paper-mono-pager react react-dom lxgw-wenkai-webfont
+```
+
+```tsx
+import { PaperMagazine } from 'paper-mono-pager';
+import 'paper-mono-pager/style.css';        // 组件样式（不含 reset，不会污染宿主页面）
+import 'lxgw-wenkai-webfont/style.css';     // 可选：霞鹜文楷字体，不引入则回退到系统衬线体
+
+export default function Page() {
+  return (
+    <div style={{ height: '100vh' }}>
+      <PaperMagazine />   {/* 填满父容器，父容器需要有明确高度 */}
+    </div>
+  );
+}
+```
+
+### Props
+
+| 属性 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `pages` | `PageContent[]` | 内置 16 页中文文集 | 书本内容。页数在挂载时确定，之后可替换内容但不能增减页数 |
+| `onPagesChange` | `(pages) => void` | - | 编辑、重置、导入后触发 |
+| `onPageChange` | `(info) => void` | - | 翻页后触发，`info` 含 `sheet / totalSheets / leftPage / rightPage` |
+| `themes` | `PaperTheme[]` | 四套宣纸主题 | 自定义纸张主题 `{ name, bg, text, accent }` |
+| `defaultThemeIndex` | `number` | `0` | 初始主题 |
+| `patternUrl` | `string` | 内置纹理 | 自定义纸张纹理图 |
+| `editable` | `boolean` | `true` | 是否提供排印编辑功能 |
+| `showControls` | `boolean` | `true` | 是否显示底部控制栏与页码条 |
+| `isEditMode` / `onToggleEditMode` | `boolean` / `(mode) => void` | 内部管理 | 受控编辑模式 |
+| `defaultSoundEnabled` | `boolean` | `true` | 翻页音效初始状态 |
+| `autoPlay` / `autoPlayInterval` | `boolean` / `number` | `false` / `2800` | 自动连读 |
+| `className` / `style` | - | - | 外层容器样式 |
+
+通过 `ref` 可命令式控制：
+
+```tsx
+const ref = useRef<PaperMagazineHandle>(null);
+<PaperMagazine ref={ref} />;
+ref.current?.flipNext();      // flipPrev / goToSheet(n) / goToPage(i) / getPages()
+```
+
+自定义内容示例：
+
+```tsx
+import { PaperMagazine, type PageContent } from 'paper-mono-pager';
+
+const pages: PageContent[] = [
+  { type: 'cover', sideIndex: 1, title: '我的书', subtitle: '副标题', author: '作者' },
+  // ... type 可选 cover | frontispiece | toc | chapter | spread | poetry | colophon
+];
+<PaperMagazine pages={pages} />;
+```
+
+> 需要 WebGL 支持；组件仅在浏览器端运行，SSR 框架（Next.js 等）请用动态导入并关闭 SSR。
+
+---
+
+## 🚀 本地开发
+
+本仓库是 npm workspaces 单仓：
+
 ```bash
 git clone https://github.com/dodola/paper-mono-pager.git
 cd paper-mono-pager
-```
-
-### 2. 安装依赖
-```bash
 npm install
-```
-
-### 3. 本地开发
-```bash
-npm run dev
-```
-打开浏览器访问 `http://localhost:3000` 即可体验。
-
-### 4. 生产打包
-```bash
-npm run build
+npm run dev        # 启动 demo（http://localhost:3000），demo 直接引用组件库源码，改动即时热更新
+npm test           # 运行组件库单元测试
+npm run build      # 构建 demo
+npm run build:lib  # 单独构建组件库产物（暂未发布 npm）
 ```
 
 ---
@@ -78,23 +131,15 @@ npm run build
 
 ```text
 paper-mono-pager/
-├── src/
-│   ├── components/
-│   │   ├── PaperMagazine.tsx           # React 主界面与控制台吸底胶囊组件
-│   │   └── magazine/
-│   │       ├── MagazineEngine.ts       # 核心 3D 翻页物理引擎与交互调度
-│   │       ├── shaders.ts              # 官方复刻 GLSL 顶点/片元着色器
-│   │       ├── noiseBaker.ts           # 纸张网格几何体与噪声烘焙器
-│   │       ├── pageRenderer.ts         # 纯文本 Canvas 2D 出版级排版渲染器
-│   │       ├── chinesePublicationData.ts # 16 页中文古籍文集数据
-│   │       ├── pageSound.ts            # Web Audio 翻页纸张音效
-│   │       └── types.ts                # 物理交互与动画状态类型
-│   ├── App.tsx                         # 顶层布局应用
-│   ├── main.tsx                        # 入口与字体全局加载
-│   └── index.css                       # 全局样式配置
-├── public/                             # 静态纹理资源
-├── package.json
-└── vite.config.ts
+├── packages/paper-mono-pager/      # 组件库（发布为 npm 包 paper-mono-pager）
+│   └── src/
+│       ├── index.ts                # 对外导出入口
+│       ├── PaperMagazine.tsx       # React 主组件与控制条
+│       ├── styles.css              # 组件样式入口（Tailwind theme + utilities）
+│       ├── assets/texture.webp     # 内置纸张纹理（构建时内联）
+│       └── magazine/               # 3D 引擎、着色器、Canvas 排印渲染、阅读器、编辑器
+├── examples/demo/                  # 通过 `import 'paper-mono-pager'` 接入的示例应用
+└── scripts/                        # 资源辅助脚本
 ```
 
 ---

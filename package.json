@@ -1,32 +1,19 @@
 {
-  "name": "paper-mono-pager",
+  "name": "paper-mono-pager-monorepo",
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "clsx": "^2.1.1",
-    "lucide-react": "^1.16.0",
-    "lxgw-wenkai-webfont": "^1.7.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "tailwind-merge": "^3.0.2",
-    "three": "^0.180.0"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "^4.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@types/three": "^0.180.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "tailwindcss": "^4.0.0",
-    "typescript": "^5.7.0",
-    "vite": "^6.2.0",
-    "vitest": "^3.2.7"
+    "build:lib": "npm run build -w paper-mono-pager",
+    "dev": "npm run dev -w paper-mono-pager-demo",
+    "dev:lib": "npm run dev -w paper-mono-pager",
+    "build": "npm run build -w paper-mono-pager-demo",
+    "preview": "npm run preview -w paper-mono-pager-demo",
+    "test": "npm test -w paper-mono-pager",
+    "typecheck": "npm run typecheck -w paper-mono-pager"
   }
 }

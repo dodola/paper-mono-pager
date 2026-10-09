@@ -1,4 +1,13 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+} from 'react';
+import textureUrl from './assets/texture.webp?inline';
 import { MagazineEngine } from './magazine/MagazineEngine';
 import { pageSound } from './magazine/pageSound';
 import { CHINESE_PAGES, getAllBookText, PageContent } from './magazine/chinesePublicationData';
@@ -20,26 +29,92 @@ import {
   PenTool,
 } from 'lucide-react';
 
-export interface PaperMagazineProps {
-  className?: string;
-  isEditMode?: boolean;
-  onToggleEditMode?: (mode: boolean) => void;
+export interface PaperTheme {
+  name: string;
+  /** 纸张底色 */
+  bg: string;
+  /** 正文墨色 */
+  text: string;
+  /** 强调色（朱砂、章节号等） */
+  accent: string;
 }
 
-const PAPER_THEMES = [
+export interface PaperMagazineHandle {
+  flipNext(): void;
+  flipPrev(): void;
+  /** 跳转到第 n 张对开页（0 = 封面） */
+  goToSheet(sheet: number): void;
+  /** 跳转到第 n 页（从 0 开始） */
+  goToPage(pageIndex: number): void;
+  getPages(): PageContent[];
+}
+
+export interface PaperMagazinePageInfo {
+  sheet: number;
+  totalSheets: number;
+  /** 左/右页页码（从 1 开始），封面左侧、封底右侧为 null */
+  leftPage: number | null;
+  rightPage: number | null;
+}
+
+export interface PaperMagazineProps {
+  className?: string;
+  style?: React.CSSProperties;
+  /** 初始页面内容，默认内置中文文集。页数在挂载时确定，之后只能替换内容、不能增减页数 */
+  pages?: PageContent[];
+  /** 页面内容被编辑（或重置、导入）后触发 */
+  onPagesChange?: (pages: PageContent[]) => void;
+  /** 翻页后触发 */
+  onPageChange?: (info: PaperMagazinePageInfo) => void;
+  /** 纸张主题列表，默认四套宣纸主题 */
+  themes?: PaperTheme[];
+  defaultThemeIndex?: number;
+  /** 纸张纹理图地址，默认使用库内置纹理 */
+  patternUrl?: string;
+  /** 是否提供排印编辑功能（编辑按钮与编辑器），默认 true */
+  editable?: boolean;
+  /** 是否显示底部控制栏与页码跳转条，默认 true */
+  showControls?: boolean;
+  /** 编辑模式（受控），不传则由组件内部管理 */
+  isEditMode?: boolean;
+  onToggleEditMode?: (mode: boolean) => void;
+  /** 初始是否开启翻页音效，默认 true */
+  defaultSoundEnabled?: boolean;
+  /** 是否自动连读，默认 false */
+  autoPlay?: boolean;
+  /** 自动连读的翻页间隔（毫秒），默认 2800 */
+  autoPlayInterval?: number;
+}
+
+export const DEFAULT_PAPER_THEMES: PaperTheme[] = [
   { name: '古籍米宣', bg: '#F9F7F2', text: '#242220', accent: '#9B2D26' },
   { name: '竹青素白', bg: '#F5F7F4', text: '#1E2321', accent: '#2D5A46' },
   { name: '暖调象牙', bg: '#FDFBF7', text: '#25211E', accent: '#A03B26' },
   { name: '怀旧古纸', bg: '#F5EFE6', text: '#2C2723', accent: '#8C2B21' },
 ];
 
-const ALL_BOOK_TEXT = getAllBookText();
-
-export const PaperMagazine: React.FC<PaperMagazineProps> = ({
-  className = '',
-  isEditMode: propIsEditMode,
-  onToggleEditMode,
-}) => {
+export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>(function PaperMagazine(
+  {
+    className = '',
+    style,
+    pages: initialPages,
+    onPagesChange,
+    onPageChange,
+    themes = DEFAULT_PAPER_THEMES,
+    defaultThemeIndex = 0,
+    patternUrl: patternUrlProp,
+    editable = true,
+    showControls = true,
+    isEditMode: propIsEditMode,
+    onToggleEditMode,
+    defaultSoundEnabled = true,
+    autoPlay: autoPlayProp = false,
+    autoPlayInterval = 2800,
+  },
+  ref
+) {
+  const defaultPagesRef = useRef<PageContent[]>(initialPages ?? CHINESE_PAGES);
+  const PAPER_THEMES = themes;
   const stageWrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<MagazineEngine | null>(null);
@@ -48,7 +123,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   const themeIndexRef = useRef(0);
 
   const [internalEditMode, setInternalEditMode] = useState(false);
-  const isEditMode = propIsEditMode !== undefined ? propIsEditMode : internalEditMode;
+  const isEditMode = editable && (propIsEditMode !== undefined ? propIsEditMode : internalEditMode);
   const toggleEditMode = () => {
     if (onToggleEditMode) {
       onToggleEditMode(!isEditMode);
@@ -58,18 +133,20 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   };
 
   const [pages, setPages] = useState<PageContent[]>(() =>
-    structuredClone(CHINESE_PAGES)
+    structuredClone(defaultPagesRef.current)
   );
   const [activeEditPageIndex, setActiveEditPageIndex] = useState(0);
 
   const [currentSheet, setCurrentSheet] = useState(0);
   const [leftPage, setLeftPage] = useState<number | null>(null);
   const [rightPage, setRightPage] = useState<number | null>(1);
-  const [totalSheets, setTotalSheets] = useState(Math.ceil(CHINESE_PAGES.length / 2));
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [autoPlay, setAutoPlay] = useState(false);
+  const [totalSheets, setTotalSheets] = useState(Math.ceil(defaultPagesRef.current.length / 2));
+  const [soundEnabled, setSoundEnabled] = useState(defaultSoundEnabled);
+  const [autoPlay, setAutoPlay] = useState(autoPlayProp);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [selectedThemeIndex, setSelectedThemeIndex] = useState(0);
+  const [selectedThemeIndex, setSelectedThemeIndex] = useState(
+    Math.min(Math.max(defaultThemeIndex, 0), themes.length - 1)
+  );
 
   // 动态自适应尺寸（保持 1.44753 宽高比，最大限度填满可用空间）
   const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
@@ -80,7 +157,12 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   pagesRef.current = pages;
   themeIndexRef.current = selectedThemeIndex;
 
-  const patternUrl = `${import.meta.env.BASE_URL}assets/pages/texture.webp`;
+  const patternUrl = patternUrlProp ?? textureUrl;
+  const onPagesChangeRef = useRef(onPagesChange);
+  onPagesChangeRef.current = onPagesChange;
+  const onPageChangeRef = useRef(onPageChange);
+  onPageChangeRef.current = onPageChange;
+  const allBookText = useMemo(() => getAllBookText(pages), [pages]);
 
   // 监听容器大小变化，自适应最大化书籍
   useEffect(() => {
@@ -136,6 +218,12 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
         setRightPage(right);
         pageSound.playFlip();
         readerRef.current?.onPageChange();
+        onPageChangeRef.current?.({
+          sheet: sheetIdx,
+          totalSheets: engine.getTotalSheets(),
+          leftPage: left,
+          rightPage: right,
+        });
         if (right !== null) {
           setActiveEditPageIndex(right - 1);
         } else if (left !== null) {
@@ -174,31 +262,62 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   }, [isEditMode]);
 
   const handleUpdatePage = useCallback((index: number, newPage: PageContent) => {
-    setPages((prev) => {
-      const next = [...prev];
-      next[index] = newPage;
-      return next;
-    });
+    const next = [...pagesRef.current];
+    next[index] = newPage;
+    pagesRef.current = next;
+    setPages(next);
     engineRef.current?.updatePageContent(index, newPage);
+    onPagesChangeRef.current?.(next);
   }, []);
 
   const handleResetPage = useCallback(
     (index: number) => {
-      const original = structuredClone(CHINESE_PAGES[index]);
+      const original = structuredClone(defaultPagesRef.current[index]);
       handleUpdatePage(index, original);
     },
     [handleUpdatePage]
   );
 
   const handleImportPages = useCallback((newPages: PageContent[]) => {
+    pagesRef.current = newPages;
     setPages(newPages);
     engineRef.current?.setAllPageContents(newPages);
+    onPagesChangeRef.current?.(newPages);
   }, []);
+
+  // 宿主替换 pages 属性时同步内容（页数需与挂载时一致）
+  const firstPagesProp = useRef(true);
+  useEffect(() => {
+    if (firstPagesProp.current) {
+      firstPagesProp.current = false;
+      return;
+    }
+    if (!initialPages || initialPages === pagesRef.current) return;
+    if (initialPages.length !== pagesRef.current.length) {
+      console.warn('[PaperMagazine] pages 属性的页数在挂载后不能改变，已忽略本次更新');
+      return;
+    }
+    pagesRef.current = initialPages;
+    setPages(initialPages);
+    engineRef.current?.setAllPageContents(initialPages);
+  }, [initialPages]);
 
   const handleGoToPage = useCallback((index: number) => {
     const targetSheet = index === 0 ? 0 : Math.floor((index + 1) / 2);
     engineRef.current?.goToSheet(targetSheet);
   }, []);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      flipNext: () => engineRef.current?.flipNext(),
+      flipPrev: () => engineRef.current?.flipPrev(),
+      goToSheet: (sheet) => engineRef.current?.goToSheet(sheet),
+      goToPage: handleGoToPage,
+      getPages: () => pagesRef.current,
+    }),
+    [handleGoToPage]
+  );
 
   const changeTheme = (idx: number) => {
     setSelectedThemeIndex(idx);
@@ -250,10 +369,10 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
       } else {
         engineRef.current.flipNext();
       }
-    }, 2800);
+    }, autoPlayInterval);
 
     return () => clearInterval(interval);
-  }, [autoPlay]);
+  }, [autoPlay, autoPlayInterval]);
 
   const toggleSound = useCallback(() => {
     setSoundEnabled((prev) => {
@@ -291,7 +410,9 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   };
 
   return (
-    <div className={`relative size-full flex flex-col justify-between overflow-hidden select-none ${className}`}>
+    <div className={`pmp-root relative size-full flex flex-col justify-between overflow-hidden select-none ${className}`}
+      style={style}
+    >
       {/* 1. 书籍主体展示区：自适应 Window 大小，填满中间所有可用空间 */}
       <div
         ref={stageWrapperRef}
@@ -313,7 +434,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
           />
 
           {/* 原生 3D 纹理层排印编辑器 (Native In-Texture 3D Editor) */}
-          {isEditMode && (
+          {editable && isEditMode && (
             <Native3DEditor
               engine={engineRef.current}
               currentSheet={currentSheet}
@@ -362,6 +483,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
       </div>
 
         {/* 2. 底部控制栏与跳转胶囊：对齐窗口最底部 (Align Window Bottom) */}
+        {showControls && (
         <div className="w-full shrink-0 z-30 pb-3 pt-1.5 px-4 flex flex-col items-center gap-2 bg-[#F6F6F3]/95 backdrop-blur-sm border-t border-[#E8E4DC]/70">
           {/* 控制条 */}
           <div className="w-full max-w-[960px] flex items-center justify-between gap-3 rounded-full border border-[#E4E0D6] bg-white/90 px-4 py-2 shadow-sm">
@@ -415,6 +537,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
               </div>
 
               {/* 编辑模式切换 */}
+              {editable && (
               <button
                 onClick={toggleEditMode}
                 title={isEditMode ? '收起排印编辑侧栏' : '开启页面排印编辑模式'}
@@ -427,6 +550,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
                 <PenTool className="size-3" />
                 <span>{isEditMode ? '编辑中' : '编辑'}</span>
               </button>
+              )}
 
               {/* 自动连读 */}
               <button
@@ -480,6 +604,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
             })}
           </div>
         </div>
+        )}
 
         {/* 预热并异步加载霞鹜文楷字体切片 (LXGW WenKai Font Preloader) */}
       <div
@@ -487,9 +612,9 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
         className="fixed -top-[9999px] -left-[9999px] opacity-0 pointer-events-none select-none overflow-hidden h-0 w-0"
         style={{ fontFamily: '"LXGW WenKai", "LXGW WenKai Mono", serif' }}
       >
-        <span style={{ fontWeight: 400 }}>{ALL_BOOK_TEXT}</span>
-        <span style={{ fontWeight: 700 }}>{ALL_BOOK_TEXT}</span>
+        <span style={{ fontWeight: 400 }}>{allBookText}</span>
+        <span style={{ fontWeight: 700 }}>{allBookText}</span>
       </div>
     </div>
   );
-};
+});

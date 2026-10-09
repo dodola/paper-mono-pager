@@ -271,9 +271,9 @@ export const CHINESE_PAGES: PageContent[] = [
   },
 ];
 
-export function getAllBookText(): string {
+export function getAllBookText(source: PageContent[] = CHINESE_PAGES): string {
   const parts: string[] = [];
-  for (const p of CHINESE_PAGES) {
+  for (const p of source) {
     if (p.title) parts.push(p.title);
     if (p.subtitle) parts.push(p.subtitle);
     if (p.author) parts.push(p.author);

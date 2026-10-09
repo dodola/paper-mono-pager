@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { PaperMagazine } from './components/PaperMagazine';
+import { PaperMagazine } from 'paper-mono-pager';
 import { ExternalLink, PenTool } from 'lucide-react';
 
 export default function App() {

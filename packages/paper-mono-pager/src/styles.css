@@ -1,0 +1,32 @@
+/* 组件库样式：仅包含 Tailwind 的 theme 与 utilities，不含 preflight，避免污染宿主页面 */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@source ".";
+
+@layer base {
+  .pmp-root,
+  .pmp-root *,
+  .pmp-root *::before,
+  .pmp-root *::after {
+    box-sizing: border-box;
+    border: 0 solid;
+  }
+  .pmp-root button,
+  .pmp-root input,
+  .pmp-root textarea,
+  .pmp-root select {
+    font: inherit;
+    color: inherit;
+    margin: 0;
+  }
+  .pmp-root button {
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+  }
+  .pmp-root svg {
+    display: block;
+    flex-shrink: 0;
+  }
+}

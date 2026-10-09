@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import 'lxgw-wenkai-webfont/style.css';
+import 'paper-mono-pager/style.css';
 import App from './App';
 import './index.css';
 
