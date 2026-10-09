@@ -1,3 +1,16 @@
+/** 正文流中的插图（图文混排）。仅对按段落排版的页面生效：散文页、扉页、章节页 */
+export interface PageFigure {
+  url: string;
+  /** 插在第几段之前：0 = 第一段前；缺省或超出段数 = 全部正文之后 */
+  beforeParagraph?: number;
+  /** 图片高度（页面画布像素，页宽 1440），默认 480；宽度始终撑满版心 */
+  height?: number;
+  /** cover 铺满裁切（默认），contain 完整显示并留白 */
+  fit?: 'cover' | 'contain';
+  /** 图注，居中显示在图片下方 */
+  caption?: string;
+}
+
 export interface PageContent {
   type: 'cover' | 'frontispiece' | 'toc' | 'chapter' | 'spread' | 'poetry' | 'colophon';
   sideIndex: number;
@@ -14,6 +27,16 @@ export interface PageContent {
   colophonDetails?: { key: string; value: string }[];
   sealText?: string;
   themeColor?: string;
+  /**
+   * 整页图片（对应原版 paper.design/mono 的整页位图）。设置后该页以图片为页面内容，
+   * 其余文字字段不再绘制、也不可选中/编辑；图片加载完成前显示纸面底色。
+   * 跨域图片需服务端允许 CORS。
+   */
+  imageUrl?: string;
+  /** 图文混排：嵌在正文流中的插图 */
+  figures?: PageFigure[];
+  /** 图片铺放方式：cover 铺满裁切（默认），contain 完整显示并留白 */
+  imageFit?: 'cover' | 'contain';
 }
 
 export const CHINESE_PAGES: PageContent[] = [

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1983" viewBox="1440 0 1440 1983">
+<defs>
+  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#E9E0CE"/><stop offset="0.55" stop-color="#F4EEDF"/><stop offset="1" stop-color="#F9F6EE"/>
+  </linearGradient>
+  <filter id="b6"><feGaussianBlur stdDeviation="6"/></filter>
+  <filter id="b14"><feGaussianBlur stdDeviation="14"/></filter>
+  <linearGradient id="mist" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F9F6EE" stop-opacity="0"/><stop offset="1" stop-color="#F9F6EE" stop-opacity="0.95"/>
+  </linearGradient>
+</defs>
+<rect width="2880" height="1983" fill="url(#sky)"/>
+<circle cx="1440" cy="640" r="210" fill="#9B2D26" opacity="0.9"/>
+<circle cx="1440" cy="640" r="260" fill="#9B2D26" opacity="0.08"/>
+<path d="M-60 1983 L-60 1006 L157 798 L294 887 L457 835 L666 1019 L772 774 L933 798 L1035 903 L1235 975 L1466 753 L1572 1042 L1748 740 L1902 979 L2061 1040 L2193 905 L2363 973 L2496 978 L2661 954 L2765 774 L2940 1983Z" fill="#8a8478" opacity="0.35" filter="url(#b14)"/>
+<path d="M-60 1983 L-60 906 L144 1230 L244 949 L422 1009 L549 1032 L712 1041 L821 1095 L958 990 L1168 908 L1323 1090 L1445 1237 L1538 1083 L1667 1113 L1864 1061 L2021 1165 L2114 1133 L2220 1066 L2430 1007 L2542 928 L2727 986 L2926 975 L2940 1983Z" fill="#5c574f" opacity="0.55" filter="url(#b6)"/>
+<path d="M-60 1983 L-60 1360 L75 1309 L215 1212 L300 1445 L465 1351 L568 1072 L695 1132 L822 1207 L916 1209 L1084 1251 L1239 1195 L1324 1162 L1463 1336 L1545 1121 L1672 1177 L1841 1179 L2015 1300 L2176 1281 L2351 1116 L2440 1398 L2540 1083 L2664 1212 L2773 1257 L2891 1317 L2940 1983Z" fill="#3a3733" opacity="0.8"/>
+<rect x="0" y="1380" width="2880" height="260" fill="url(#mist)"/>
+<path d="M-60 1983 L-60 1639 L15 1597 L95 1683 L196 1461 L332 1501 L418 1560 L508 1655 L584 1644 L731 1484 L868 1492 L951 1619 L1073 1510 L1214 1471 L1287 1542 L1412 1568 L1494 1577 L1568 1457 L1710 1558 L1803 1464 L1919 1471 L2060 1568 L2162 1544 L2266 1658 L2359 1489 L2429 1688 L2550 1627 L2663 1577 L2759 1441 L2842 1593 L2926 1536 L2940 1983Z" fill="#242220" opacity="0.92"/>
+<path d="M0 1790 Q360 1740 720 1790 T1440 1785 T2160 1790 T2880 1780 L2880 1983 L0 1983Z" fill="#F9F6EE" opacity="0.85"/>
+<g stroke="#242220" stroke-linecap="round" fill="none">
+  <path d="M1250 1860 Q1440 1822 1630 1860 Q1440 1892 1250 1860Z" fill="#242220" stroke="none"/>
+  <line x1="1420" y1="1790" x2="1420" y2="1858" stroke-width="5"/>
+  <path d="M1425 1796 L1500 1850 L1425 1850Z" fill="#F9F6EE" stroke-width="3"/>
+</g>
+<g fill="none" stroke="#242220" stroke-width="4" stroke-linecap="round" opacity="0.7">
+  <path d="M520 420 q22 -22 44 0 q22 -22 44 0"/><path d="M640 360 q16 -16 32 0 q16 -16 32 0"/>
+  <path d="M2160 480 q22 -22 44 0 q22 -22 44 0"/><path d="M2060 540 q14 -14 28 0 q14 -14 28 0"/>
+</g>
+<rect x="2560" y="1700" width="120" height="120" fill="none" stroke="#9B2D26" stroke-width="7"/>
+<rect x="2574" y="1714" width="92" height="92" fill="#9B2D26" opacity="0.85"/>
+</svg>

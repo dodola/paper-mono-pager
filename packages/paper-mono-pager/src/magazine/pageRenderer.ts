@@ -10,6 +10,7 @@ import {
   type TextStyle,
 } from './textMetrics';
 import { buildSelectionShape, traceSegments, rgba } from './selectionShape';
+import { drawFigures, drawPageImage, getCachedPageImage } from './pageImages';
 
 export interface RenderOptions {
   paperColor?: string;
@@ -329,6 +330,13 @@ export function renderPageBase(
     ctx.fillRect(rx, ry, rw, rw);
   }
 
+  // 整页图片：直接以图片作为页面内容（图片未就绪时保留纸面底色）
+  if (page.imageUrl) {
+    const image = getCachedPageImage(page.imageUrl);
+    if (image) drawPageImage(ctx, image, page.imageFit);
+    return canvas;
+  }
+
   const isLeftPage = page.sideIndex % 2 === 0;
   // 订口在书脊处：左页书脊在右侧，右页书脊在左侧
   const spineMargin = 150;
@@ -412,16 +420,17 @@ export function renderPageBase(
 
     const pWidth = 840;
     const pLeft = (CANVAS_WIDTH - pWidth) / 2;
-    if (page.paragraphs) {
-      for (const p of page.paragraphs) {
-        const lines = wrapChineseText(ctx, '　　' + p, pWidth);
-        for (const line of lines) {
-          ctx.fillText(line, pLeft, startY);
-          startY += 58;
-        }
-        startY += 28;
+    const fpCount = page.paragraphs?.length ?? 0;
+    page.paragraphs?.forEach((p, idx) => {
+      startY = drawFigures(ctx, page, idx, pLeft, pWidth, startY);
+      const lines = wrapChineseText(ctx, '　　' + p, pWidth);
+      for (const line of lines) {
+        ctx.fillText(line, pLeft, startY);
+        startY += 58;
       }
-    }
+      startY += 28;
+    });
+    startY = drawFigures(ctx, page, fpCount, pLeft, pWidth, startY);
 
     if (hasText(page.sealText)) {
       drawSeal(ctx, page.sealText, CANVAS_WIDTH / 2, startY + 60, 68, options.accentColor);
@@ -519,15 +528,16 @@ export function renderPageBase(
     ctx.font = `400 30px ${WENKAI_FONT}`;
     ctx.fillStyle = 'rgba(36, 34, 32, 0.8)';
     ctx.textAlign = 'left';
-    if (page.paragraphs) {
-      for (const p of page.paragraphs) {
-        const lines = wrapChineseText(ctx, '　　' + p, descWidth);
-        for (const line of lines) {
-          ctx.fillText(line, descLeft, startY);
-          startY += 56;
-        }
+    const dpCount = page.paragraphs?.length ?? 0;
+    page.paragraphs?.forEach((p, idx) => {
+      startY = drawFigures(ctx, page, idx, descLeft, descWidth, startY);
+      const lines = wrapChineseText(ctx, '　　' + p, descWidth);
+      for (const line of lines) {
+        ctx.fillText(line, descLeft, startY);
+        startY += 56;
       }
-    }
+    });
+    startY = drawFigures(ctx, page, dpCount, descLeft, descWidth, startY);
 
     if (hasText(page.sealText)) {
       drawSeal(ctx, page.sealText, CANVAS_WIDTH / 2, startY + 80, 72, options.accentColor);
@@ -586,16 +596,17 @@ export function renderPageBase(
     ctx.textAlign = 'left';
 
     const lineHeight = 60;
-    if (page.paragraphs) {
-      for (const p of page.paragraphs) {
-        const lines = wrapChineseText(ctx, '　　' + p, contentWidth);
-        for (const line of lines) {
-          ctx.fillText(line, contentLeft, startY);
-          startY += lineHeight;
-        }
-        startY += 26; // 段落间距
+    const ppCount = page.paragraphs?.length ?? 0;
+    page.paragraphs?.forEach((p, idx) => {
+      startY = drawFigures(ctx, page, idx, contentLeft, contentWidth, startY);
+      const lines = wrapChineseText(ctx, '　　' + p, contentWidth);
+      for (const line of lines) {
+        ctx.fillText(line, contentLeft, startY);
+        startY += lineHeight;
       }
-    }
+      startY += 26; // 段落间距
+    });
+    startY = drawFigures(ctx, page, ppCount, contentLeft, contentWidth, startY);
 
     // 脚注（如果有）
     if (page.notes && page.notes.length > 0) {

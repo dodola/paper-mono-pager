@@ -20,6 +20,8 @@ import type {
 } from './types';
 import { PageContent } from './chinesePublicationData';
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from './pageLayout';
+import { getCachedPageImage, loadPageImage } from './pageImages';
+import { pageImageUrls } from './figureFlow';
 import { renderPageBase, paintEditOverlay, RenderOptions, PageEditState } from './pageRenderer';
 import { paintReaderOverlay, ReaderPageOverlay } from './reader/overlayPainter';
 import { pageToSheet } from './spread';
@@ -442,10 +444,24 @@ export class MagazineEngine {
     }
   }
 
+  /** 异步加载页面用到的图片，就绪后若该页仍引用同一地址则重绘 */
+  private loadImagesForPage(pageIndex: number, page: PageContent) {
+    for (const url of pageImageUrls(page)) {
+      if (getCachedPageImage(url)) continue;
+      void loadPageImage(url).then((image) => {
+        if (!image || this.isDisposed) return;
+        const current = this.pageContents[pageIndex];
+        if (!current || !pageImageUrls(current).includes(url)) return;
+        this.composePage(pageIndex, true);
+      });
+    }
+  }
+
   /** 底图 + 当前编辑覆盖层 → 纹理；rebuildBase 为 true 时重新排版绘制底图 */
   private composePage(pageIndex: number, rebuildBase: boolean) {
     const page = this.pageContents[pageIndex];
     if (!page) return;
+    this.loadImagesForPage(pageIndex, page);
     let base = this.pageBases[pageIndex];
     if (!base || rebuildBase) {
       base = renderPageBase(page, this.renderOptions);

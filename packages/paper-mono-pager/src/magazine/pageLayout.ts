@@ -1,4 +1,5 @@
 import { PageContent } from './chinesePublicationData';
+import { figureSpan } from './figureFlow';
 import { TextStyle, getFontEpoch, hasText, lineTop, textLines } from './textMetrics';
 
 export type EditableElementType =
@@ -78,6 +79,7 @@ function lineBox(s: TextStyle, x: number, width: number) {
  */
 export function getPageLayoutElements(page: PageContent, pageIndex: number): PageLayoutElement[] {
   const out: PageLayoutElement[] = [];
+  if (page.imageUrl) return out; // 整页图片没有可编辑/可选的文字
   const W = CANVAS_WIDTH;
 
   const isLeftPage = page.sideIndex % 2 === 0;
@@ -223,10 +225,12 @@ export function getPageLayoutElements(page: PageContent, pageIndex: number): Pag
     const pWidth = 840;
     const pLeft = (W - pWidth) / 2;
     page.paragraphs?.forEach((p, idx) => {
+      y += figureSpan(page, idx);
       const s = style(32, 400, 'left', pLeft, y, { lineHeight: 58, maxWidth: pWidth, prefix: '　　' });
       const n = block(idx, `题记段落 ${idx + 1}`, p, s, pLeft - 15, pWidth + 30);
       y += n * 58 + 28;
     });
+    y += figureSpan(page, page.paragraphs?.length ?? 0);
     if (hasText(page.sealText)) seal(page.sealText, W / 2, y + 60, 68, '朱砂印章');
     return out;
   }
@@ -270,10 +274,12 @@ export function getPageLayoutElements(page: PageContent, pageIndex: number): Pag
     const dWidth = 780;
     const dLeft = (W - dWidth) / 2;
     page.paragraphs?.forEach((p, idx) => {
+      y += figureSpan(page, idx);
       const s = style(30, 400, 'left', dLeft, y, { lineHeight: 56, maxWidth: dWidth, prefix: '　　' });
       const n = block(idx, `导语段落 ${idx + 1}`, p, s, dLeft - 15, dWidth + 30);
       y += n * 56;
     });
+    y += figureSpan(page, page.paragraphs?.length ?? 0);
     if (hasText(page.sealText)) seal(page.sealText, W / 2, y + 80, 72, '朱砂印章');
     return out;
   }
@@ -311,6 +317,7 @@ export function getPageLayoutElements(page: PageContent, pageIndex: number): Pag
     y += 70;
   }
   page.paragraphs?.forEach((p, idx) => {
+    y += figureSpan(page, idx);
     const s = style(31, 400, 'left', contentLeft, y, { lineHeight: 60, maxWidth: contentWidth, prefix: '　　' });
     const n = block(idx, `正文段落 ${idx + 1}`, p, s, contentLeft - 15, contentWidth + 30);
     y += n * 60 + 26;

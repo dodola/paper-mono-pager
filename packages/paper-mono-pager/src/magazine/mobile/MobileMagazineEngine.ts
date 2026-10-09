@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { PageContent } from '../chinesePublicationData';
 import { renderPageBase, RenderOptions } from '../pageRenderer';
+import { getCachedPageImage, loadPageImage } from '../pageImages';
+import { pageImageUrls } from '../figureFlow';
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from '../pageLayout';
 import { paintReaderOverlay, ReaderPageOverlay } from '../reader/overlayPainter';
 import type { ReaderEngineHost } from '../reader/engineHost';
@@ -388,6 +390,7 @@ export class MobileMagazineEngine implements ReaderEngineHost {
   private buildTexture(pageIndex: number) {
     const page = this.pageContents[pageIndex];
     if (!page) return;
+    this.loadImagesForPage(pageIndex, page);
     const tex = new THREE.CanvasTexture(this.composePage(pageIndex, renderPageBase(page, this.renderOptions)));
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
@@ -401,6 +404,19 @@ export class MobileMagazineEngine implements ReaderEngineHost {
       material.needsUpdate = true;
     }
     this.needsRender = true;
+  }
+
+  /** 异步加载页面用到的图片，就绪后若该页纹理仍在窗口内且仍引用同一地址则重建 */
+  private loadImagesForPage(pageIndex: number, page: PageContent) {
+    for (const url of pageImageUrls(page)) {
+      if (getCachedPageImage(url)) continue;
+      void loadPageImage(url).then((image) => {
+        if (!image || this.isDisposed || !this.pageTextures[pageIndex]) return;
+        const current = this.pageContents[pageIndex];
+        if (!current || !pageImageUrls(current).includes(url)) return;
+        this.buildTexture(pageIndex);
+      });
+    }
   }
 
   /** 底图 + 阅读层 → 纹理画布；没有阅读层时直接用底图 */

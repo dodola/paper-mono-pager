@@ -80,11 +80,27 @@ export function validateImportedPages(input: unknown, expectedLength: number): V
     if (!PAGE_TYPES.includes(p.type as PageContent['type'])) return { ok: false, error: `${at}：type 无效` };
     if (typeof p.sideIndex !== 'number') return { ok: false, error: `${at}：缺少数字 sideIndex` };
     if (!isStr(p.title)) return { ok: false, error: `${at}：缺少字符串 title` };
-    for (const k of ['subtitle', 'author', 'chapterNumber', 'headerText', 'sealText']) {
+    for (const k of ['subtitle', 'author', 'chapterNumber', 'headerText', 'sealText', 'imageUrl']) {
       if (p[k] !== undefined && !isStr(p[k])) return { ok: false, error: `${at}：${k} 必须是字符串` };
+    }
+    if (p.imageFit !== undefined && p.imageFit !== 'cover' && p.imageFit !== 'contain') {
+      return { ok: false, error: `${at}：imageFit 必须是 cover 或 contain` };
     }
     for (const k of ['paragraphs', 'poetryLines', 'notes']) {
       if (p[k] !== undefined && !isStrArr(p[k])) return { ok: false, error: `${at}：${k} 必须是字符串数组` };
+    }
+    const figs = p.figures;
+    if (figs !== undefined) {
+      if (!Array.isArray(figs)) return { ok: false, error: `${at}：figures 必须是数组` };
+      for (const f of figs as Record<string, unknown>[]) {
+        const bad =
+          !f || !isStr(f.url) ||
+          (f.beforeParagraph !== undefined && !(Number.isInteger(f.beforeParagraph) && (f.beforeParagraph as number) >= 0)) ||
+          (f.height !== undefined && !(typeof f.height === 'number' && f.height > 0)) ||
+          (f.fit !== undefined && f.fit !== 'cover' && f.fit !== 'contain') ||
+          (f.caption !== undefined && !isStr(f.caption));
+        if (bad) return { ok: false, error: `${at}：figures 中存在无效条目` };
+      }
     }
     const toc = p.tocItems;
     if (toc !== undefined && !(Array.isArray(toc) && toc.every((t) => t && isStr(t.title) && isStr(t.author) && isStr(t.page)))) {

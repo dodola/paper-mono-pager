@@ -38,6 +38,10 @@
   - 形变与参考实现数值一致：堆叠抬升 → 尾部弯曲 → 锥形卷起 → 绕书脊旋转，以及翻完整本后的「卷起收尾」，`referenceParity.test.ts` 用参考实现实际送入着色器的参数做回归；
   - 鼠标 / 触控笔在窄屏下可选字、划线、右键菜单；触摸始终归翻页，暂未提供触摸选字；排印编辑器依赖桌面双页坐标，仅宽屏可用；
   - 跨过断点时自动重建引擎，并在两个方向都保持当前阅读页。
+- 🖼️ **图片：整页图片与图文混排**
+  - 整页图片：`PageContent.imageUrl` 让一页直接显示一张图（对应原版 paper.design/mono 的整页位图，`imageFit` 可选 `cover` 铺满裁切 / `contain` 完整留白）；
+  - 图文混排：`PageContent.figures` 把插图嵌进散文页 / 扉页 / 章节页的正文流，可指定插在第几段之前、高度、适配方式与图注，后续段落自动下移，编辑、选字、搜索的坐标同步跟随；
+  - 图片与文字一样被光栅化进同一张页面纹理，因此卷曲、纸纹、背光等效果对图片同样生效；图片异步加载，就绪前显示占位。
 - ✍️ **实时排印编辑模式 (WYSIWYG Edit Mode)**
   - 支持左侧分栏抽屉实时编辑全书 16 页图文内容（标题、副标题、著者、版心正文、诗歌行、目录条目、CIP 版权明细、朱砂印章）；
   - 毫秒级单页局部光栅化重绘，3D 纸张纹理实时所见即所得同步；
@@ -113,6 +117,23 @@ const pages: PageContent[] = [
 ];
 <PaperMagazine pages={pages} />;
 ```
+
+图片页与图文混排：
+
+```tsx
+const pages: PageContent[] = [
+  // 整页图片：该页不再绘制文字，也不可选中/编辑
+  { type: 'spread', sideIndex: 2, title: '插页', imageUrl: '/art/plate-01.png', imageFit: 'cover' },
+  // 图文混排：figures 嵌入正文流（仅 spread / frontispiece / chapter 页）
+  {
+    type: 'spread', sideIndex: 3, title: '赤壁夜泛',
+    paragraphs: ['第一段……', '第二段……'],
+    figures: [{ url: '/art/chibi.jpg', beforeParagraph: 1, height: 420, caption: '图一 · 赤壁夜泛' }],
+  },
+];
+```
+
+> 图片会被绘入 Canvas 再上传为 WebGL 纹理，所以跨域图片需服务端返回 `Access-Control-Allow-Origin`（组件以 `crossOrigin="anonymous"` 请求），否则无法显示。`figures` 中 `beforeParagraph` 缺省 = 全部正文之后；插图不会自动分页，请自行控制高度避免与页脚注释重叠。
 
 > 需要 WebGL 支持；组件仅在浏览器端运行，SSR 框架（Next.js 等）请用动态导入并关闭 SSR。
 
