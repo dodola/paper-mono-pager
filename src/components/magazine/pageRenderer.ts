@@ -213,7 +213,7 @@ function drawActiveBox(
 }
 
 // 融合选区：外圆角 + 行间内倒角，半透明渐变填充、细描边与柔光
-function paintSelection(
+export function paintSelection(
   ctx: CanvasRenderingContext2D,
   style: TextStyle,
   rects: Rect[],

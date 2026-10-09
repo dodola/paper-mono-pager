@@ -180,7 +180,19 @@ export interface Rect {
 }
 
 export function selectionRects(style: TextStyle, text: string, from: number, to: number): Rect[] {
-  if (style.vertical || from === to) return [];
+  if (from === to) return [];
+  if (style.vertical) {
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    return [
+      {
+        x: style.anchorX - style.fontSize / 2,
+        y: style.baselineY + lo * style.vertical.step,
+        width: style.fontSize,
+        height: (hi - lo) * style.vertical.step - (style.vertical.step - style.fontSize),
+      },
+    ];
+  }
   const a = Math.min(from, to) + (style.prefix?.length ?? 0);
   const b = Math.max(from, to) + (style.prefix?.length ?? 0);
   const { lines, measure } = textLines(style, text);

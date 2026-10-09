@@ -21,6 +21,7 @@ import type {
 import { PageContent } from './chinesePublicationData';
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from './pageLayout';
 import { renderPageBase, paintEditOverlay, RenderOptions, PageEditState } from './pageRenderer';
+import { paintReaderOverlay, ReaderPageOverlay } from './reader/overlayPainter';
 
 export interface MagazineEngineOptions {
   container: HTMLElement;
@@ -61,6 +62,8 @@ export class MagazineEngine {
   // Native 3D Editor state
   private isEditMode = false;
   private pageEditStates: Record<number, PageEditState | null> = {};
+  private pageReaderOverlays: Record<number, ReaderPageOverlay | null> = {};
+  private pointerInterceptor: ((e: PointerEvent) => boolean) | null = null;
   /** 每页不含覆盖层的底图缓存，hover/光标闪烁只需合成覆盖层 */
   private pageBases: (HTMLCanvasElement | undefined)[] = [];
   /** 每页复用的纹理画布，避免每次交互重新分配 11MB 位图 */
@@ -455,6 +458,11 @@ export class MagazineEngine {
     const ctx = canvas.getContext('2d')!;
     ctx.drawImage(base, 0, 0);
 
+    const readerOverlay = this.pageReaderOverlays[pageIndex];
+    if (readerOverlay && !this.isEditMode) {
+      paintReaderOverlay(ctx, page, pageIndex, readerOverlay, this.renderOptions.accentColor ?? '#9B2D26');
+    }
+
     const editState = this.pageEditStates[pageIndex];
     if (editState) {
       paintEditOverlay(ctx, page, this.renderOptions, editState);
@@ -506,6 +514,34 @@ export class MagazineEngine {
       }
     }
     this.needsRender = true;
+  }
+
+  /** 阅读层（选区、划线、搜索、书签）直接绘进页面纹理 */
+  public setPageReaderOverlay(pageIndex: number, overlay: ReaderPageOverlay | null) {
+    if (pageIndex < 0 || pageIndex >= this.pageContents.length) return;
+    this.pageReaderOverlays[pageIndex] = overlay;
+    this.composePage(pageIndex, false);
+  }
+
+  /** 阅读器接管指针：返回 true 时引擎不再把这次按下当作翻页 */
+  public setPointerInterceptor(fn: ((e: PointerEvent) => boolean) | null) {
+    this.pointerInterceptor = fn;
+  }
+
+  public getHitArea(): HTMLElement {
+    return this.hitArea;
+  }
+
+  public getContainer(): HTMLElement {
+    return this.container;
+  }
+
+  public isEditing(): boolean {
+    return this.isEditMode;
+  }
+
+  public getAccentColor(): string {
+    return this.renderOptions.accentColor ?? '#9B2D26';
   }
 
   public clearAllEditStates() {
@@ -819,6 +855,7 @@ export class MagazineEngine {
 
   private handlePointerDown(e: PointerEvent) {
     if (this.isEditMode) return;
+    if (this.pointerInterceptor?.(e)) return;
     if (e.button !== 0) return;
     const target = this.getSheetTargetUnderPointer(e.clientX);
     if (!target) return;

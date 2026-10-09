@@ -4,6 +4,7 @@ import { pageSound } from './magazine/pageSound';
 import { CHINESE_PAGES, getAllBookText, PageContent } from './magazine/chinesePublicationData';
 import { RenderOptions } from './magazine/pageRenderer';
 import { Native3DEditor } from './magazine/Native3DEditor';
+import { ReaderController } from './magazine/reader/ReaderController';
 import {
   ChevronLeft,
   ChevronRight,
@@ -42,6 +43,9 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
   const stageWrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<MagazineEngine | null>(null);
+  const readerRef = useRef<ReaderController | null>(null);
+  const pagesRef = useRef<PageContent[]>([]);
+  const themeIndexRef = useRef(0);
 
   const [internalEditMode, setInternalEditMode] = useState(false);
   const isEditMode = propIsEditMode !== undefined ? propIsEditMode : internalEditMode;
@@ -72,6 +76,9 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
     width: 1181,
     height: 816,
   });
+
+  pagesRef.current = pages;
+  themeIndexRef.current = selectedThemeIndex;
 
   const patternUrl = `${import.meta.env.BASE_URL}assets/pages/texture.webp`;
 
@@ -128,6 +135,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
         setLeftPage(left);
         setRightPage(right);
         pageSound.playFlip();
+        readerRef.current?.onPageChange();
         if (right !== null) {
           setActiveEditPageIndex(right - 1);
         } else if (left !== null) {
@@ -139,11 +147,31 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
     engineRef.current = engine;
     setTotalSheets(engine.getTotalSheets());
 
+    readerRef.current = new ReaderController({
+      engine,
+      getPages: () => pagesRef.current,
+      getTheme: () => {
+        const t = PAPER_THEMES[themeIndexRef.current];
+        return { paper: t.bg, ink: t.text, accent: t.accent };
+      },
+    });
+
     return () => {
+      readerRef.current?.dispose();
+      readerRef.current = null;
       engine.dispose();
       engineRef.current = null;
     };
   }, []);
+
+  // 阅读器随编辑内容与编辑模式同步：编辑时让位，退出后重绘阅读层
+  useEffect(() => {
+    readerRef.current?.setPages(pages);
+  }, [pages]);
+
+  useEffect(() => {
+    readerRef.current?.setEnabled(!isEditMode);
+  }, [isEditMode]);
 
   const handleUpdatePage = useCallback((index: number, newPage: PageContent) => {
     setPages((prev) => {
@@ -305,7 +333,7 @@ export const PaperMagazine: React.FC<PaperMagazineProps> = ({
           {!isEditMode && (
             <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity whitespace-nowrap">
               <Sparkles className="size-3 text-[#e5b299]" />
-              <span>单击或拖拽边缘翻页 · 按住不放极速连翻</span>
+              <span>拖拽页边翻页 · 选中文字可复制、划线 · 右键更多</span>
             </div>
           )}
 
