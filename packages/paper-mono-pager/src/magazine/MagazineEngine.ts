@@ -24,7 +24,8 @@ import { getCachedPageImage, loadPageImage } from './pageImages';
 import { pageImageUrls } from './figureFlow';
 import { renderPageBase, paintEditOverlay, RenderOptions, PageEditState } from './pageRenderer';
 import { paintReaderOverlay, ReaderPageOverlay } from './reader/overlayPainter';
-import { pageToSheet } from './spread';
+import { pageToSheet, planFlipChain } from './spread';
+import { desktopPageRange, planTextures } from './textureWindow';
 
 export interface MagazineEngineOptions {
   container: HTMLElement;
@@ -33,7 +34,13 @@ export interface MagazineEngineOptions {
   renderOptions?: RenderOptions;
   /** 起始对开页序号（0 = 封面），用于从单页布局切换过来时保持阅读位置 */
   initialSheet?: number;
-  onPageChange?: (currentSheet: number, leftPage: number | null, rightPage: number | null) => void;
+  /**
+   * 纹理窗口半径（以纸张数计，默认 2）：只为当前对开页前后各这么多张纸持有页面纹理，
+   * 其余页翻到时再绘制、离开后释放。全书页数再多，常驻内存也只取决于它。
+   */
+  textureRadius?: number;
+  /** instant 为 true 表示是 jumpToPage/jumpToSheet 的瞬间跳转（没有翻页动画，宿主不应播翻页音） */
+  onPageChange?: (currentSheet: number, leftPage: number | null, rightPage: number | null, instant?: boolean) => void;
   onProgress?: (loaded: number, total: number) => void;
   onReady?: () => void;
 }
@@ -43,7 +50,7 @@ export class MagazineEngine {
   private pageContents: PageContent[];
   private patternUrl?: string;
   private renderOptions: RenderOptions;
-  private onPageChange?: (currentSheet: number, leftPage: number | null, rightPage: number | null) => void;
+  private onPageChange?: MagazineEngineOptions['onPageChange'];
   private onProgress?: (loaded: number, total: number) => void;
   private onReady?: () => void;
 
@@ -60,7 +67,12 @@ export class MagazineEngine {
   private currentSheetIndex = 0; // A: 0..totalSheets
   private sheets: SheetData[] = [];
   private animations: ActiveAnimation[] = [];
-  private pageTextures: THREE.CanvasTexture[] = [];
+  /** 只有窗口内的页才有纹理，窗口外为 undefined */
+  private pageTextures: (THREE.CanvasTexture | undefined)[] = [];
+  private textureRadius: number;
+  private farSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  /** goToSheet 逐张翻页的定时器，跳页或再次跳转时需要取消 */
+  private flipTimers: ReturnType<typeof setTimeout>[] = [];
   private patternTexture: THREE.Texture | null = null;
   private placeholderTex: THREE.DataTexture;
 
@@ -149,6 +161,7 @@ export class MagazineEngine {
     this.onProgress = options.onProgress;
     this.onReady = options.onReady;
 
+    this.textureRadius = Math.max(1, Math.trunc(options.textureRadius ?? 2));
     this.totalSheets = Math.ceil(this.pageContents.length / 2);
     this.currentSheetIndex = Math.min(Math.max(Math.trunc(options.initialSheet ?? 0), 0), this.totalSheets);
 
@@ -231,7 +244,7 @@ export class MagazineEngine {
     this.resizeObserver.observe(this.canvas);
     this.handleResize();
 
-    // Generate dynamic canvas textures for all pages
+    // 只为当前对开页附近的页生成纹理，其余页翻到时再绘制
     this.initPatternTexture();
     this.renderAllPageTextures();
 
@@ -457,17 +470,39 @@ export class MagazineEngine {
     }
   }
 
-  /** 底图 + 当前编辑覆盖层 → 纹理；rebuildBase 为 true 时重新排版绘制底图 */
-  private composePage(pageIndex: number, rebuildBase: boolean) {
+  /**
+   * 底图 + 当前编辑覆盖层 → 纹理；rebuildBase 为 true 时重新排版绘制底图。
+   * 没有纹理的页（窗口外）只记录内容与覆盖层状态，进入窗口时再绘制；force 用于窗口内首次建立纹理。
+   */
+  private composePage(pageIndex: number, rebuildBase: boolean, force = false) {
     const page = this.pageContents[pageIndex];
     if (!page) return;
+    if (!force && !this.pageTextures[pageIndex]) return;
     this.loadImagesForPage(pageIndex, page);
+
+    const readerOverlay = this.pageReaderOverlays[pageIndex];
+    const paintReader = !!readerOverlay && !this.isEditMode;
+    const editState = this.pageEditStates[pageIndex];
+    const hasOverlay = paintReader || !!editState;
+
+    // 无覆盖层且底图没变：纹理已经是干净的底图
+    if (!hasOverlay && !rebuildBase && !force && !this.pageBases[pageIndex]) return;
+
     let base = this.pageBases[pageIndex];
     if (!base || rebuildBase) {
       base = renderPageBase(page, this.renderOptions);
-      this.pageBases[pageIndex] = base;
     }
 
+    if (!hasOverlay) {
+      // 无覆盖层：底图画布直接作纹理，不再另存一份合成画布（每页省 11MB）
+      this.pageBases[pageIndex] = undefined;
+      this.pageCanvases[pageIndex] = undefined;
+      this.applyPageCanvas(pageIndex, base);
+      this.needsRender = true;
+      return;
+    }
+
+    this.pageBases[pageIndex] = base;
     let canvas = this.pageCanvases[pageIndex];
     if (!canvas) {
       canvas = document.createElement('canvas');
@@ -478,12 +513,9 @@ export class MagazineEngine {
     const ctx = canvas.getContext('2d')!;
     ctx.drawImage(base, 0, 0);
 
-    const readerOverlay = this.pageReaderOverlays[pageIndex];
-    if (readerOverlay && !this.isEditMode) {
+    if (paintReader && readerOverlay) {
       paintReaderOverlay(ctx, page, pageIndex, readerOverlay, this.renderOptions.accentColor ?? '#9B2D26');
     }
-
-    const editState = this.pageEditStates[pageIndex];
     if (editState) {
       paintEditOverlay(ctx, page, this.renderOptions, editState);
     }
@@ -491,15 +523,97 @@ export class MagazineEngine {
     this.needsRender = true;
   }
 
+  // ---------- 纹理窗口 ----------
+
+  private pageRange(radius: number): [number, number] {
+    return desktopPageRange(this.currentSheetIndex, this.totalSheets, this.pageContents.length, radius);
+  }
+
+  private heldPages(): number[] {
+    const held: number[] = [];
+    this.pageTextures.forEach((t, i) => t && held.push(i));
+    return held;
+  }
+
+  private isSheetBusy(sheetIndex: number): boolean {
+    return this.isSheetAnimating(sheetIndex) || this.dragState?.sheetIndex === sheetIndex;
+  }
+
+  /** 释放一页的纹理与画布，材质退回占位纹理 */
+  private releasePage(pageIndex: number) {
+    const tex = this.pageTextures[pageIndex];
+    if (!tex) return;
+    const images = [tex.image, this.pageBases[pageIndex], this.pageCanvases[pageIndex]];
+    tex.dispose();
+    this.pageTextures[pageIndex] = undefined;
+    this.pageBases[pageIndex] = undefined;
+    this.pageCanvases[pageIndex] = undefined;
+
+    const sheet = this.sheets[pageIndex >> 1];
+    if (sheet) {
+      if (pageIndex % 2 === 0) {
+        sheet.frontTex = this.placeholderTex;
+        const material = sheet.mesh.material as THREE.MeshStandardMaterial;
+        material.map = this.placeholderTex;
+        material.needsUpdate = true;
+      } else {
+        sheet.sheetUniforms.uBackMap.value = this.placeholderTex;
+      }
+    }
+    // 立刻归还位图内存（Safari 等对画布总量有硬上限，不能等 GC）
+    for (const img of images) {
+      if (img instanceof HTMLCanvasElement) {
+        img.width = 0;
+        img.height = 0;
+      }
+    }
+  }
+
+  /** 释放窗口之外的页；正在翻动的纸张暂不释放，避免动画中途变成空白 */
+  private releaseOutsideWindow() {
+    const { release } = planTextures(this.heldPages(), this.pageRange(this.textureRadius), 2);
+    for (const i of release) {
+      if (!this.isSheetBusy(i >> 1)) this.releasePage(i);
+    }
+  }
+
+  /**
+   * 对齐纹理窗口：紧邻当前对开页的页立刻绘制（翻页时马上要露出来），
+   * 更远的页和释放工作延后到空闲时，不挤占翻页动画的帧。
+   */
+  private syncTextures(nearRadius = 1) {
+    const [lo, hi] = this.pageRange(Math.min(nearRadius, this.textureRadius));
+    for (const i of planTextures(this.heldPages(), [lo, hi], 0).build) {
+      this.composePage(i, true, true);
+    }
+    this.releaseOutsideWindow();
+    this.scheduleFarSync();
+    this.onProgress?.(Math.min(hi + 1, this.pageContents.length), this.pageContents.length);
+  }
+
+  private scheduleFarSync() {
+    if (this.farSyncTimer !== null) return;
+    this.farSyncTimer = setTimeout(() => {
+      this.farSyncTimer = null;
+      if (this.isDisposed) return;
+      // 翻页动画进行中窗口还在移动，等停下来再补齐/回收
+      if (this.animations.length > 0 || this.dragState) return this.scheduleFarSync();
+      const far = this.pageRange(this.textureRadius);
+      for (const i of planTextures(this.heldPages(), far, 0).build) {
+        this.composePage(i, true, true);
+      }
+      this.releaseOutsideWindow();
+    }, 80);
+  }
+
+  /** 重绘已持有纹理的页（换主题、字体加载完成、导入内容），并补齐窗口 */
   public renderAllPageTextures(customOptions?: RenderOptions) {
     if (customOptions) {
       this.renderOptions = { ...this.renderOptions, ...customOptions };
     }
 
-    this.pageContents.forEach((_, i) => {
-      this.composePage(i, true);
-      this.onProgress?.(i + 1, this.pageContents.length);
-    });
+    this.heldPages().forEach((i) => this.composePage(i, true));
+    this.syncTextures();
 
     this.needsRender = true;
     if (!this.isEngineReady) {
@@ -809,6 +923,7 @@ export class MagazineEngine {
     };
 
     this.currentSheetIndex = targetProgress === 1 ? sheetIndex + 1 : sheetIndex;
+    this.syncTextures();
     this.notifyPageChange();
     this.needsRender = true;
 
@@ -997,6 +1112,7 @@ export class MagazineEngine {
       tilt: 2 * Math.random() - 1,
     };
     this.currentSheetIndex = targetProgress === 1 ? drag.sheetIndex + 1 : drag.sheetIndex;
+    this.syncTextures();
     this.notifyPageChange();
 
     const fromProg = sheet.flipProgress;
@@ -1050,7 +1166,7 @@ export class MagazineEngine {
     this.needsRender = true;
   }
 
-  private notifyPageChange() {
+  private notifyPageChange(instant = false) {
     let left: number | null = null;
     let right: number | null = null;
 
@@ -1065,7 +1181,7 @@ export class MagazineEngine {
       right = this.currentSheetIndex * 2 + 1;
     }
 
-    this.onPageChange?.(this.currentSheetIndex, left, right);
+    this.onPageChange?.(this.currentSheetIndex, left, right, instant);
   }
 
   private animate(currentTime: number) {
@@ -1268,31 +1384,60 @@ export class MagazineEngine {
     this.goToSheet(pageToSheet(pageIndex));
   }
 
+  /**
+   * 翻过去（带翻页动画与音效）：近处逐张翻，距离超过 MAX_FLIP_CHAIN 张时先静默落到目标前几张，
+   * 只翻最后几张。需要完全没有动画的瞬间跳转请用 jumpToSheet / jumpToPage。
+   */
   public goToSheet(targetIndex: number) {
-    const clamped = THREE.MathUtils.clamp(targetIndex, 0, this.totalSheets);
+    const clamped = THREE.MathUtils.clamp(Math.trunc(targetIndex), 0, this.totalSheets);
+    this.cancelFlipChain();
     if (clamped === this.currentSheetIndex) return;
+    const { jumpTo } = planFlipChain(this.currentSheetIndex, clamped);
+    if (jumpTo !== null) this.jumpToSheet(jumpTo);
 
-    if (clamped > this.currentSheetIndex) {
-      let delay = 0;
-      for (let i = this.currentSheetIndex; i < clamped; i++) {
+    const forward = clamped > this.currentSheetIndex;
+    const from = forward ? this.currentSheetIndex : this.currentSheetIndex - 1;
+    const step = forward ? 1 : -1;
+    let delay = 0;
+    for (let i = from; forward ? i < clamped : i >= clamped; i += step) {
+      this.flipTimers.push(
         setTimeout(() => {
-          if (!this.isDisposed) {
-            this.triggerSheetFlip(i, true, 1, 0.6);
-          }
-        }, delay);
-        delay += 90;
-      }
-    } else {
-      let delay = 0;
-      for (let i = this.currentSheetIndex - 1; i >= clamped; i--) {
-        setTimeout(() => {
-          if (!this.isDisposed) {
-            this.triggerSheetFlip(i, false, 0, 0.6);
-          }
-        }, delay);
-        delay += 90;
-      }
+          if (!this.isDisposed) this.triggerSheetFlip(i, forward, forward ? 1 : 0, 0.6);
+        }, delay)
+      );
+      delay += 90;
     }
+  }
+
+  private cancelFlipChain() {
+    for (const t of this.flipTimers) clearTimeout(t);
+    this.flipTimers = [];
+  }
+
+  /** 瞬间跳到第 n 张对开页（0 = 封面）：没有翻页动画、不触发翻页音，只绘制目标附近的页 */
+  public jumpToSheet(targetIndex: number) {
+    const clamped = THREE.MathUtils.clamp(Math.trunc(targetIndex), 0, this.totalSheets);
+    this.cancelFlipChain();
+    this.cancelAutoFlip();
+    this.animations = [];
+    this.dragState = null;
+
+    const changed = clamped !== this.currentSheetIndex;
+    this.currentSheetIndex = clamped;
+    this.sheets.forEach((sheet, i) => {
+      sheet.flipProgress = i < clamped ? 1 : 0;
+      sheet.direction = 1;
+      sheet.directionSmooth = 1;
+    });
+    // 跳转时只同步绘制可见的那一对，邻近页随后在空闲时补齐
+    this.syncTextures(0);
+    this.needsRender = true;
+    if (changed) this.notifyPageChange(true);
+  }
+
+  /** 瞬间跳到包含第 n 页（从 0 起）的对开页 */
+  public jumpToPage(pageIndex: number) {
+    this.jumpToSheet(pageToSheet(Math.trunc(pageIndex)));
   }
 
   public getCurrentSheet(): number {
@@ -1306,6 +1451,8 @@ export class MagazineEngine {
   public dispose() {
     this.isDisposed = true;
     this.cancelAutoFlip();
+    this.cancelFlipChain();
+    if (this.farSyncTimer !== null) clearTimeout(this.farSyncTimer);
     this.abortController.abort();
     this.resizeObserver.disconnect();
     this.renderer.setAnimationLoop(null);

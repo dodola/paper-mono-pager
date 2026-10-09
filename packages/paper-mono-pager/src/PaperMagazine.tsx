@@ -50,6 +50,13 @@ export interface PaperMagazineHandle {
   goToSheet(sheet: number): void;
   /** 跳转到第 n 页（从 0 开始） */
   goToPage(pageIndex: number): void;
+  /**
+   * 瞬间跳到第 n 张对开页（0 = 封面）：没有翻页动画、不播翻页音，只绘制目标附近的页。
+   * 适合目录、进度条、音频同步等需要立刻到达某页的场景；goToSheet 则会逐张翻过去。
+   */
+  jumpToSheet(sheet: number): void;
+  /** 瞬间跳到第 n 页（从 0 开始），同 jumpToSheet：无动画、无音效 */
+  jumpToPage(pageIndex: number): void;
   getPages(): PageContent[];
 }
 
@@ -77,6 +84,20 @@ export interface PaperMagazineProps {
   patternUrl?: string;
   /** 是否提供排印编辑功能（编辑按钮与编辑器），默认 true */
   editable?: boolean;
+  /** 初始显示的页（从 0 开始，包含该页的对开页/单页），默认 0 = 封面 */
+  initialPage?: number;
+  /**
+   * 是否绑定键盘快捷键（←/→、空格、PageUp/PageDown、Home/End 翻页），默认 true。
+   * 宿主自己要用这些键（例如空格播放/暂停）时设为 false，组件不会在 window 上监听任何翻页按键，
+   * 翻页改走 ref 的 flipNext/flipPrev/jumpToPage 等方法。
+   */
+  keyboard?: boolean;
+  /**
+   * 是否启用阅读器（选字复制、划线、搜索、书签、右键菜单及其浮层与快捷键），默认 true。
+   * 设为 false 时不创建阅读器，也不会在 window 上监听指针、滚轮和 Ctrl+C/F/A/D 等按键。
+   * 变化会重建渲染引擎（阅读位置保留）。
+   */
+  reader?: boolean;
   /** 是否显示底部控制栏与页码跳转条，默认 true */
   showControls?: boolean;
   /** 编辑模式（受控），不传则由组件内部管理 */
@@ -117,6 +138,9 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     defaultThemeIndex = 0,
     patternUrl: patternUrlProp,
     editable = true,
+    initialPage = 0,
+    keyboard = true,
+    reader: readerEnabled = true,
     showControls = true,
     isEditMode: propIsEditMode,
     onToggleEditMode,
@@ -146,7 +170,8 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     () => window.matchMedia(singlePageQuery).matches,
     () => false
   );
-  const pageIndexRef = useRef(0);
+  const startPage = Math.min(Math.max(Math.trunc(initialPage) || 0, 0), Math.max(defaultPagesRef.current.length - 1, 0));
+  const pageIndexRef = useRef(startPage);
   const readerRef = useRef<ReaderController | null>(null);
   const pagesRef = useRef<PageContent[]>([]);
   const themeIndexRef = useRef(0);
@@ -166,9 +191,14 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
   );
   const [activeEditPageIndex, setActiveEditPageIndex] = useState(0);
 
-  const [currentSheet, setCurrentSheet] = useState(0);
-  const [leftPage, setLeftPage] = useState<number | null>(null);
-  const [rightPage, setRightPage] = useState<number | null>(1);
+  // 初始位置直接按 initialPage 算出，避免首帧先显示封面再跳过去
+  const [currentSheet, setCurrentSheet] = useState(() => (isMobile ? startPage : pageToSheet(startPage)));
+  const [leftPage, setLeftPage] = useState<number | null>(() =>
+    isMobile ? null : sheetToSpread(pageToSheet(startPage), Math.ceil(defaultPagesRef.current.length / 2), defaultPagesRef.current.length).left
+  );
+  const [rightPage, setRightPage] = useState<number | null>(() =>
+    isMobile ? startPage + 1 : sheetToSpread(pageToSheet(startPage), Math.ceil(defaultPagesRef.current.length / 2), defaultPagesRef.current.length).right
+  );
   const [totalSheets, setTotalSheets] = useState(Math.ceil(defaultPagesRef.current.length / 2));
   const [soundEnabled, setSoundEnabled] = useState(defaultSoundEnabled);
   const [autoPlay, setAutoPlay] = useState(autoPlayProp);
@@ -245,11 +275,11 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     };
 
     let engine: MagazineEngine | MobileMagazineEngine;
-    const handlePageChange = (sheetIdx: number, left: number | null, right: number | null) => {
+    const handlePageChange = (sheetIdx: number, left: number | null, right: number | null, instant?: boolean) => {
       setCurrentSheet(sheetIdx);
       setLeftPage(left);
       setRightPage(right);
-      pageSound.playFlip();
+      if (!instant) pageSound.playFlip();
       readerRef.current?.onPageChange();
       onPageChangeRef.current?.({
         sheet: sheetIdx,
@@ -301,14 +331,16 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     setTotalSheets(engine.getTotalSheets());
 
     // 阅读器同时接入两种引擎；移动端的触摸指针不交给阅读器，保证滑动翻页优先
-    readerRef.current = new ReaderController({
-      engine,
-      getPages: () => pagesRef.current,
-      getTheme: () => {
-        const t = PAPER_THEMES[themeIndexRef.current];
-        return { paper: t.bg, ink: t.text, accent: t.accent };
-      },
-    });
+    readerRef.current = readerEnabled
+      ? new ReaderController({
+          engine,
+          getPages: () => pagesRef.current,
+          getTheme: () => {
+            const t = PAPER_THEMES[themeIndexRef.current];
+            return { paper: t.bg, ink: t.text, accent: t.accent };
+          },
+        })
+      : null;
 
     return () => {
       readerRef.current?.dispose();
@@ -316,7 +348,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       engine.dispose();
       engineRef.current = null;
     };
-  }, [isMobile]);
+  }, [isMobile, readerEnabled]);
 
   // 阅读器随编辑内容与编辑模式同步：编辑时让位，退出后重绘阅读层
   useEffect(() => {
@@ -384,6 +416,12 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
       flipPrev: () => engineRef.current?.flipPrev(),
       goToSheet: (sheet) => engineRef.current?.goToSheet(sheet),
       goToPage: handleGoToPage,
+      jumpToSheet: (sheet) => engineRef.current?.jumpToSheet(sheet),
+      jumpToPage: (pageIndex) => {
+        const engine = engineRef.current;
+        if (engine instanceof MobileMagazineEngine) engine.jumpToPage(pageIndex);
+        else engine?.jumpToPage(pageIndex);
+      },
       getPages: () => pagesRef.current,
     }),
     [handleGoToPage]
@@ -399,8 +437,9 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
     });
   };
 
-  // 键盘快捷翻页
+  // 键盘快捷翻页（keyboard=false 时完全不监听，把按键让给宿主）
   useEffect(() => {
+    if (!keyboard) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
@@ -425,7 +464,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [keyboard]);
 
   // 自动翻页计时器
   useEffect(() => {
@@ -533,7 +572,7 @@ export const PaperMagazine = forwardRef<PaperMagazineHandle, PaperMagazineProps>
           {!isEditMode && !isMobile && (
             <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full bg-[#242220]/75 px-3.5 py-1 text-xs text-white/90 backdrop-blur-md opacity-75 hover:opacity-100 transition-opacity whitespace-nowrap">
               <Sparkles className="size-3 text-[#e5b299]" />
-              <span>拖拽页边翻页 · 选中文字可复制、划线 · 右键更多</span>
+              <span>{readerEnabled ? '拖拽页边翻页 · 选中文字可复制、划线 · 右键更多' : '拖拽页边翻页'}</span>
             </div>
           )}
 

@@ -16,3 +16,21 @@ export function sheetToSpread(
   const right = sheet * 2 + 1;
   return { left: sheet * 2, right: right > pageCount ? null : right };
 }
+
+/** 逐张翻页动画最多翻过的纸张数；更远的跳转先静默落到离目标这么近的位置 */
+export const MAX_FLIP_CHAIN = 6;
+
+/**
+ * 规划从 current 到 target 的翻页：距离不超过 maxChain 就逐张翻（jumpTo = null）；
+ * 更远则先瞬间落到离目标 maxChain 张的位置，再翻完最后几张——既保留“翻到那里”的观感，
+ * 又不会在 100 多页的书里翻上十几秒、响上百声。
+ */
+export function planFlipChain(
+  current: number,
+  target: number,
+  maxChain: number = MAX_FLIP_CHAIN
+): { jumpTo: number | null } {
+  const distance = Math.abs(target - current);
+  if (distance <= maxChain) return { jumpTo: null };
+  return { jumpTo: target > current ? target - maxChain : target + maxChain };
+}

@@ -91,6 +91,9 @@ export default function Page() {
 | `themes` | `PaperTheme[]` | 四套宣纸主题 | 自定义纸张主题 `{ name, bg, text, accent }` |
 | `defaultThemeIndex` | `number` | `0` | 初始主题 |
 | `patternUrl` | `string` | 内置纹理 | 自定义纸张纹理图 |
+| `initialPage` | `number` | `0` | 初始显示的页（从 0 起，含该页的对开页/单页），直接落在那里，不会先显示封面 |
+| `keyboard` | `boolean` | `true` | 是否在 `window` 上绑定翻页快捷键（`←`/`→`、空格、`PgUp`/`PgDn`、`Home`/`End`）。宿主要用这些键（如空格播放/暂停）时设为 `false`，翻页改用 ref 方法 |
+| `reader` | `boolean` | `true` | 是否启用阅读器（选字复制、划线、搜索、书签、右键菜单及浮层，以及 `Ctrl+C/A/F/D` 等快捷键）。设为 `false` 不创建阅读器，也不监听 `window` 的指针/滚轮/按键；变化会重建渲染引擎（阅读位置保留） |
 | `editable` | `boolean` | `true` | 是否提供排印编辑功能 |
 | `showControls` | `boolean` | `true` | 是否显示底部控制栏与页码条 |
 | `isEditMode` / `onToggleEditMode` | `boolean` / `(mode) => void` | 内部管理 | 受控编辑模式 |
@@ -104,7 +107,21 @@ export default function Page() {
 const ref = useRef<PaperMagazineHandle>(null);
 <PaperMagazine ref={ref} />;
 ref.current?.flipNext();      // flipPrev / goToSheet(n) / goToPage(i) / getPages()
+ref.current?.jumpToPage(119); // 瞬间跳页：无翻页动画、无翻页音，适合目录 / 进度条 / 音频同步
 ```
+
+| 方法 | 说明 |
+|------|------|
+| `flipNext()` / `flipPrev()` | 向后 / 向前翻一页（带动画与音效） |
+| `goToPage(i)` / `goToSheet(n)` | 翻到目标位置（带动画与音效）。距离不超过 6 张纸时逐张翻；更远则先静默落到目标前 6 张，只翻最后几张，不会在长书里翻上十几秒 |
+| `jumpToPage(i)` / `jumpToSheet(n)` | **瞬间**到达，完全没有动画和音效，只绘制目标附近的页。`onPageChange` 照常触发 |
+| `getPages()` | 当前页面内容 |
+
+> 页序号 `i` 从 0 起；`jumpToSheet` 的 `n` 在双页布局是对开页序号（0 = 封面），单页布局即页序号。
+
+### 长书与内存
+
+双页引擎只为当前对开页前后各 2 张纸（约 12 页）持有页面纹理，其余页翻到时才绘制、离开后释放；单页引擎同理。常驻内存只取决于这个窗口，与全书页数无关（140 页的书与 16 页的书占用相当）。紧邻当前页的纹理同步绘制，更远的在空闲时补齐。
 
 自定义内容示例：
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pageToSheet, sheetToSpread } from './spread';
+import { pageToSheet, sheetToSpread, planFlipChain } from './spread';
 
 describe('pageToSheet', () => {
   it('cover page maps to sheet 0', () => {
@@ -27,5 +27,26 @@ describe('sheetToSpread', () => {
   it('an odd page count leaves the last right page empty', () => {
     expect(sheetToSpread(2, 3, 5)).toEqual({ left: 4, right: 5 });
     expect(sheetToSpread(2, 3, 4)).toEqual({ left: 4, right: null });
+  });
+});
+
+describe('planFlipChain', () => {
+  it('flips every sheet when the target is near', () => {
+    expect(planFlipChain(5, 8, 6)).toEqual({ jumpTo: null });
+    expect(planFlipChain(5, 11, 6)).toEqual({ jumpTo: null });
+    expect(planFlipChain(5, 5, 6)).toEqual({ jumpTo: null });
+  });
+
+  it('forward: jumps to maxChain sheets short of the target, then flips the rest', () => {
+    expect(planFlipChain(5, 60, 6)).toEqual({ jumpTo: 54 });
+  });
+
+  it('backward: same, approaching from above', () => {
+    expect(planFlipChain(60, 5, 6)).toEqual({ jumpTo: 11 });
+  });
+
+  it('leaves exactly maxChain flips after the jump', () => {
+    const { jumpTo } = planFlipChain(0, 100, 6);
+    expect(100 - jumpTo!).toBe(6);
   });
 });

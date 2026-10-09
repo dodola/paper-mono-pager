@@ -47,7 +47,7 @@ export interface MobileMagazineOptions {
   /** 起始页（0 起），用于从桌面布局切换过来时保持阅读位置 */
   initialIndex?: number;
   /** left 恒为 null：移动端一次只看一页 */
-  onPageChange?: (currentSheet: number, left: number | null, right: number | null) => void;
+  onPageChange?: (currentSheet: number, left: number | null, right: number | null, instant?: boolean) => void;
   onProgress?: (loaded: number, total: number) => void;
   onReady?: () => void;
 }
@@ -564,10 +564,10 @@ export class MobileMagazineEngine implements ReaderEngineHost {
     return { x: rect.left + ((v.x + 1) / 2) * rect.width, y: rect.top + ((1 - v.y) / 2) * rect.height };
   }
 
-  private notifyPageChange() {
+  private notifyPageChange(instant = false) {
     // 翻过最后一张到回到首页之间 current 会短暂等于 count，此时仍报告最后一页
     const page = Math.min(this.current, Math.max(this.count - 1, 0));
-    this.onPageChange?.(page, null, page + 1);
+    this.onPageChange?.(page, null, page + 1, instant);
   }
 
   // ---------- 翻页 ----------
@@ -652,6 +652,28 @@ export class MobileMagazineEngine implements ReaderEngineHost {
 
   public goToPage(pageIndex: number) {
     this.goToSheet(pageIndex);
+  }
+
+  /** 瞬间跳到第 n 页（从 0 起）：没有翻页动画、不触发翻页音，只绘制目标附近的页 */
+  public jumpToPage(pageIndex: number) {
+    const target = clamp(Math.trunc(pageIndex), 0, Math.max(this.count - 1, 0));
+    this.cancelChain();
+    this.cancelHold();
+    this.animations = [];
+    this.drag = null;
+
+    const changed = target !== this.current;
+    this.current = target;
+    for (const s of this.sheets) s.flipProgress = s.index < target ? 1 : 0;
+    this.syncTextures();
+    this.needsRender = true;
+    this.updateLoop();
+    if (changed) this.notifyPageChange(true);
+  }
+
+  /** 与桌面引擎同名：单页堆叠里“对开页序号”就是页序号 */
+  public jumpToSheet(index: number) {
+    this.jumpToPage(index);
   }
 
   // ---------- 指针 / 触摸 ----------
