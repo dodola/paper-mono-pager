@@ -22,12 +22,15 @@ import { PageContent } from './chinesePublicationData';
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from './pageLayout';
 import { renderPageBase, paintEditOverlay, RenderOptions, PageEditState } from './pageRenderer';
 import { paintReaderOverlay, ReaderPageOverlay } from './reader/overlayPainter';
+import { pageToSheet } from './spread';
 
 export interface MagazineEngineOptions {
   container: HTMLElement;
   pageContents: PageContent[];
   patternUrl?: string;
   renderOptions?: RenderOptions;
+  /** 起始对开页序号（0 = 封面），用于从单页布局切换过来时保持阅读位置 */
+  initialSheet?: number;
   onPageChange?: (currentSheet: number, leftPage: number | null, rightPage: number | null) => void;
   onProgress?: (loaded: number, total: number) => void;
   onReady?: () => void;
@@ -145,6 +148,7 @@ export class MagazineEngine {
     this.onReady = options.onReady;
 
     this.totalSheets = Math.ceil(this.pageContents.length / 2);
+    this.currentSheetIndex = Math.min(Math.max(Math.trunc(options.initialSheet ?? 0), 0), this.totalSheets);
 
     // Setup Three.js scene
     this.scene = new THREE.Scene();
@@ -1242,6 +1246,10 @@ export class MagazineEngine {
     if (this.currentSheetIndex > 0) {
       this.triggerSheetFlip(this.currentSheetIndex - 1, false, 0);
     }
+  }
+
+  public goToPage(pageIndex: number) {
+    this.goToSheet(pageToSheet(pageIndex));
   }
 
   public goToSheet(targetIndex: number) {

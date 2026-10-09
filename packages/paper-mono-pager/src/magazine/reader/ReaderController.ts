@@ -1,6 +1,6 @@
 import { PageContent } from '../chinesePublicationData';
 import { CANVAS_WIDTH } from '../pageLayout';
-import type { MagazineEngine } from '../MagazineEngine';
+import type { ReaderEngineHost } from './engineHost';
 import {
   ANNOTATION_COLORS,
   Annotation,
@@ -30,12 +30,12 @@ import {
   textOf,
   wordRange,
 } from './readerDoc';
-import { Match, findMatches, firstMatchFrom, sheetOfPage } from './search';
+import { Match, findMatches, firstMatchFrom } from './search';
 import { PanelItem, ScreenLayer, ScreenState, Theme } from './screenLayer';
 import { ReaderServices, defaultServices } from './services';
 
 export interface ReaderControllerOptions {
-  engine: MagazineEngine;
+  engine: ReaderEngineHost;
   getPages: () => PageContent[];
   getTheme: () => Theme;
   /** 缺省使用浏览器实现；可逐项替换为宿主自己的库 */
@@ -58,7 +58,7 @@ const isTextInput = (t: EventTarget | null) =>
   t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
 
 export class ReaderController {
-  private engine: MagazineEngine;
+  private engine: ReaderEngineHost;
   private getPages: () => PageContent[];
   private getTheme: () => Theme;
   private services: ReaderServices;
@@ -267,7 +267,7 @@ export class ReaderController {
   }
 
   private goToPage(pageIndex: number) {
-    if (!this.visiblePages().includes(pageIndex)) this.engine.goToSheet(sheetOfPage(pageIndex));
+    if (!this.visiblePages().includes(pageIndex)) this.engine.goToPage(pageIndex);
   }
 
   // ---------- 指针 ----------
